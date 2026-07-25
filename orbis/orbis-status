@@ -1,0 +1,56 @@
+#!/bin/sh
+set -eu
+
+STATE_FILE=/var/lib/orbis/status.json
+
+clear 2>/dev/null || true
+printf '%s\n' '========================================'
+printf '%s\n' '              ORBIS NODE'
+printf '%s\n' '========================================'
+
+if [ ! -f "$STATE_FILE" ]; then
+  printf '%s\n' 'Estado: inicializando...'
+  printf '%s\n' 'Use: sudo sv status orbisd'
+  exit 1
+fi
+
+python3 - "$STATE_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+data = json.loads(p.read_text(encoding="utf-8"))
+
+def human(n):
+    n = int(n or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} {unit}"
+        n /= 1024
+
+def uptime(seconds):
+    seconds = int(seconds or 0)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, _ = divmod(seconds, 60)
+    return f"{days}d {hours}h {minutes}m" if days else f"{hours}h {minutes}m"
+
+mem = data.get("memory", {})
+disk = data.get("disk", {})
+cpu = data.get("cpu", {})
+temp = data.get("temperature_c")
+print(f"Versão:       {data.get('orbis_version', '?')}")
+print(f"Máquina:      {data.get('hostname', '?')}")
+print(f"Rede:         {'OK' if data.get('network_ok') else 'SEM CONEXÃO'}")
+print(f"Uptime:       {uptime(data.get('uptime_seconds', 0))}")
+print(f"Carga CPU:    {cpu.get('load_1m', 0)}")
+print(f"RAM usada:    {human(mem.get('used_bytes', 0))} / {human(mem.get('total_bytes', 0))}")
+print(f"Disco livre:  {human(disk.get('free_bytes', 0))} / {human(disk.get('total_bytes', 0))}")
+print(f"Temperatura:  {temp} °C" if temp is not None else "Temperatura:  indisponível")
+print(f"Atualizado:   {data.get('timestamp_utc', '?')}")
+PY
+
+printf '%s\n' '========================================'
+printf '%s\n' 'Receita registrada: R$ 0,00'
+printf '%s\n' 'Próximo módulo: ofertas e afiliados'
