@@ -16,20 +16,16 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    container:
-      image: debian:trixie-slim
-    timeout-minutes: 60
+    timeout-minutes: 20
 
     steps:
-      - name: Install build tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates git live-build debootstrap xorriso \
-            isolinux syslinux-common squashfs-tools
-
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xorriso curl
 
       - name: Build OrbisOS
         run: |
@@ -42,7 +38,7 @@ jobs:
       - name: Upload ISO
         uses: actions/upload-artifact@v4
         with:
-          name: OrbisOS-0.1-amd64
+          name: OrbisOS-0.1-x86_64
           path: |
             dist/*.iso
             dist/*.sha256
