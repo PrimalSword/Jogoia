@@ -1,0 +1,4 @@
+#!/bin/sh
+exec 2>&1
+cd /opt/orbis
+exec chpst -u orbis:orbis /usr/bin/python3 /opt/orbis/orbisd.py
