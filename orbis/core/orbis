@@ -24,6 +24,7 @@ show_status() {
 }
 
 show_status
+[ "${1:-}" = "--status" ] && exit 0
 
 while :; do
   printf '%s\n' '1 - Configurar Wi-Fi'
@@ -32,6 +33,7 @@ while :; do
   printf '%s\n' '4 - Atualizar status'
   printf '%s\n' '5 - Reiniciar'
   printf '%s\n' '6 - Desligar'
+  printf '%s\n' '0 - Voltar ao terminal'
   printf '%s'   'Escolha: '
   read -r choice
 
@@ -42,6 +44,7 @@ while :; do
     4) show_status ;;
     5) reboot ;;
     6) poweroff ;;
+    0) exit 0 ;;
     *) printf 'Opção inválida.\n' ;;
   esac
 done
