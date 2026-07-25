@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+URL="https://github.com/PrimalSword/Jogoia/archive/refs/heads/orbis-os.tar.gz"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+printf '%s\n' 'Verificando atualização do Orbis...'
+
+if ! command -v curl >/dev/null 2>&1; then
+  printf '%s\n' 'curl não está instalado.'
+  exit 1
+fi
+
+curl -fL --retry 3 "$URL" -o "$TMP/orbis.tar.gz"
+tar -xzf "$TMP/orbis.tar.gz" -C "$TMP"
+SRC="$TMP/Jogoia-orbis-os/orbis/core"
+
+[ -d "$SRC" ] || { printf '%s\n' 'Pacote de atualização inválido.'; exit 1; }
+
+for file in orbis orbis-wifi orbis-install orbis-update; do
+  [ -f "$SRC/$file" ] || { printf 'Arquivo ausente: %s\n' "$file"; exit 1; }
+  install -m 0755 "$SRC/$file" "/usr/local/bin/$file"
+done
+
+printf '%s\n' 'Orbis atualizado com sucesso.'
