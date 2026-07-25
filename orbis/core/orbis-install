@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+
+printf '%s\n' 'ORBIS OS - INSTALAÇÃO NO CARTÃO/DISCO'
+printf '%s\n' '============================================='
+printf '%s\n' 'ATENÇÃO: o dispositivo escolhido será APAGADO por completo.'
+printf '\nDispositivos detectados:\n\n'
+
+if command -v lsblk >/dev/null 2>&1; then
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL
+else
+  fdisk -l 2>/dev/null || cat /proc/partitions
+fi
+
+printf '\nDigite o dispositivo inteiro de destino (ex.: /dev/mmcblk0 ou /dev/sdc): '
+read -r TARGET
+
+case "$TARGET" in
+  /dev/sd[a-z]|/dev/mmcblk[0-9]|/dev/nvme[0-9]n[0-9]) ;;
+  *) printf '%s\n' 'Destino inválido. Operação cancelada.'; exit 1 ;;
+esac
+
+[ -b "$TARGET" ] || { printf '%s\n' 'Esse dispositivo não existe.'; exit 1; }
+
+BOOTDEV="$(findmnt -n -o SOURCE /media/usb 2>/dev/null || true)"
+case "$BOOTDEV" in
+  "$TARGET"*) printf '%s\n' 'Você escolheu o pendrive que iniciou o OrbisOS. Operação bloqueada.'; exit 1 ;;
+esac
+
+printf '\nVocê escolheu: %s\n' "$TARGET"
+printf '%s\n' 'Tudo nele será apagado, inclusive o antiX.'
+printf '%s' 'Para confirmar, digite exatamente INSTALAR: '
+read -r CONFIRM
+[ "$CONFIRM" = "INSTALAR" ] || { printf '%s\n' 'Cancelado.'; exit 1; }
+
+command -v setup-disk >/dev/null 2>&1 || {
+  printf '%s\n' 'setup-disk não está disponível nesta imagem.'
+  exit 1
+}
+
+printf '\nIniciando instalação em modo system...\n'
+BOOTLOADER=syslinux setup-disk -m sys "$TARGET"
+
+printf '\nInstalação concluída.\n'
+printf '%s\n' 'Desligue, remova o pendrive e ligue novamente pelo cartão/disco.'
