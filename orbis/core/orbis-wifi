@@ -1,6 +1,12 @@
 #!/bin/sh
 set -u
 
+LOGFILE="/var/log/orbis.log"
+mkdir -p /var/log
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE"
+}
+
 printf '%s\n' 'ORBIS OS - CONFIGURAÇÃO DE REDE'
 printf '%s\n' '---------------------------------------------'
 
@@ -21,19 +27,30 @@ if [ -z "$INTERFACES" ]; then
     printf '\nDispositivos de rede encontrados no PCI:\n'
     lspci -nn | grep -Ei 'network|wireless|ethernet' || true
   fi
+  log 'Falha: nenhuma interface de rede encontrada.'
   exit 1
 fi
 
+for iface in $INTERFACES; do
+  case "$iface" in
+    wlan*|wlp*) ifconfig "$iface" up 2>/dev/null || ip link set "$iface" up 2>/dev/null || true ;;
+  esac
+done
+
 printf 'Interfaces encontradas: %s\n\n' "$INTERFACES"
+log "Interfaces encontradas: $INTERFACES"
 
 if ! command -v setup-interfaces >/dev/null 2>&1; then
   printf '%s\n' 'O configurador de rede não está disponível nesta imagem.'
+  log 'Falha: setup-interfaces ausente.'
   exit 1
 fi
 
 setup-interfaces
 rc-service networking restart 2>/dev/null || rc-service networking start 2>/dev/null || true
+rc-service wpa_supplicant restart 2>/dev/null || rc-service wpa_supplicant start 2>/dev/null || true
+sleep 3
 
-sleep 2
 printf '\nEstado atual:\n'
 ip -brief address 2>/dev/null || ip address
+log 'Configuração de rede concluída.'
