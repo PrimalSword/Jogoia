@@ -3,7 +3,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="ECO: Último Toque"
+        android:label="ECO: Paradoxo"
         android:theme="@style/AppTheme"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher">
