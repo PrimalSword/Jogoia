@@ -3,7 +3,7 @@ set -euo pipefail
 
 VERSION="0.1.0"
 ARCH="amd64"
-DIST="bookworm"
+DIST="trixie"
 IMAGE_NAME="orbisos-${VERSION}-${ARCH}"
 WORKDIR="${PWD}/.orbis-live"
 OUTDIR="${PWD}/dist"
@@ -34,7 +34,6 @@ lb config noauto \
   --debian-installer none \
   --archive-areas "main contrib non-free-firmware" \
   --apt-recommends false \
-  --security false \
   --memtest none \
   --iso-application "OrbisOS" \
   --iso-publisher "Orbis Project" \
