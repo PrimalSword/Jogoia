@@ -17,24 +17,62 @@ jobs:
       - name: Baixar o projeto
         uses: actions/checkout@v4
 
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Preparar Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Exportar pelo Godot
-        id: export
-        uses: firebelley/godot-export@v7.0.0
-        with:
-          godot_executable_download_url: https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
-          godot_export_templates_download_url: https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz
-          relative_project_path: ./
-          presets_to_export: Android
-          use_preset_export_path: true
-          archive_output: false
+      - name: Instalar componentes Android
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Instalar Godot e templates
+        run: |
+          mkdir -p "$HOME/godot" "$HOME/.local/share/godot/export_templates/4.3.stable"
+          curl -L -o /tmp/godot.zip "https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d "$HOME/godot"
+          mv "$HOME/godot/Godot_v4.3-stable_linux.x86_64" "$HOME/godot/godot"
+          chmod +x "$HOME/godot/godot"
+          curl -L -o /tmp/templates.tpz "https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz"
+          unzip -q /tmp/templates.tpz -d /tmp/godot-templates
+          cp -R /tmp/godot-templates/templates/. "$HOME/.local/share/godot/export_templates/4.3.stable/"
+
+      - name: Criar chave de desenvolvimento
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=PrimalSword,C=BR"
+
+      - name: Importar e validar projeto
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          "$HOME/godot/godot" --headless --editor --path . --quit-after 3
+
+      - name: Compilar APK
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          mkdir -p build
+          "$HOME/godot/godot" --headless --path . --export-debug Android "build/ECO-Ultimo-Toque.apk"
+          test -s "build/ECO-Ultimo-Toque.apk"
 
       - name: Publicar APK para download
         uses: actions/upload-artifact@v4
         with:
           name: ECO-Ultimo-Toque-Android
-          path: ${{ steps.export.outputs.build_directory }}/**/*.apk
+          path: build/ECO-Ultimo-Toque.apk
           if-no-files-found: error
           retention-days: 30
