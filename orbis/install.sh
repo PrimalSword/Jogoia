@@ -26,6 +26,7 @@ echo "[3/7] Instalando Orbis Core..."
 install -m 0755 "$BASE_DIR/orbisd.py" /opt/orbis/orbisd.py
 install -m 0755 "$BASE_DIR/orbis-status" /usr/local/bin/orbis-status
 install -m 0755 "$BASE_DIR/orbis-mode" /usr/local/bin/orbis-mode
+install -m 0644 "$BASE_DIR/profile.sh" /etc/profile.d/orbis.sh
 
 echo "[4/7] Configurando serviço runit..."
 install -d -m 0755 /etc/sv/orbisd
@@ -41,16 +42,16 @@ elif [ -d /etc/sv/sshd ]; then
 fi
 
 echo "[6/7] Reduzindo escritas desnecessárias no cartão..."
+if [ -f /etc/fstab ] && [ ! -f /etc/fstab.orbis-backup ]; then
+  cp -a /etc/fstab /etc/fstab.orbis-backup
+fi
 if ! grep -q '^tmpfs[[:space:]]\+/tmp' /etc/fstab; then
   printf '%s\n' 'tmpfs /tmp tmpfs defaults,noatime,nosuid,nodev,mode=1777,size=128M 0 0' >> /etc/fstab
 fi
 
 # Evita depender de swap em cartão flash; não apaga arquivos existentes.
 swapoff -a 2>/dev/null || true
-if [ -f /etc/fstab ]; then
-  cp -a /etc/fstab /etc/fstab.orbis-backup
-  sed -i '/^[^#].*[[:space:]]swap[[:space:]]/ s/^/# Orbis disabled: /' /etc/fstab
-fi
+sed -i '/^[^#].*[[:space:]]swap[[:space:]]/ s/^/# Orbis disabled: /' /etc/fstab
 
 echo "[7/7] Iniciando serviço..."
 sv up orbisd 2>/dev/null || true
