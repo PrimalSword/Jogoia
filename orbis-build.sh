@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 ALPINE_VERSION="3.24.1"
 ARCH="x86_64"
 FLAVOR="extended"
@@ -21,7 +21,7 @@ for command in curl xorriso tar sha256sum install; do
   }
 done
 
-for file in orbis orbis-wifi orbis-install orbis-update; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log; do
   [ -f "$CORE_DIR/$file" ] || {
     echo "Arquivo ausente: $CORE_DIR/$file" >&2
     exit 1
@@ -32,10 +32,12 @@ rm -rf "$WORKDIR"
 mkdir -p \
   "$WORKDIR/overlay/etc/apk" \
   "$WORKDIR/overlay/etc/network" \
+  "$WORKDIR/overlay/etc/local.d" \
   "$WORKDIR/overlay/root" \
   "$WORKDIR/overlay/usr/local/bin" \
+  "$WORKDIR/overlay/var/log" \
   "$OUTDIR"
-rm -f "$OUTDIR/${IMAGE_NAME}.iso" "$OUTDIR/${IMAGE_NAME}.iso.sha256"
+rm -f "$OUTDIR"/orbisos-*.iso "$OUTDIR"/orbisos-*.iso.sha256
 
 printf 'Baixando Alpine Extended %s...\n' "$ALPINE_VERSION"
 curl --fail --location --retry 3 \
@@ -52,6 +54,7 @@ curl --fail --location --retry 3 \
 
 printf 'orbis\n' > "$WORKDIR/overlay/etc/hostname"
 : > "$WORKDIR/overlay/etc/motd"
+printf 'OrbisOS %s iniciado.\n' "$VERSION" > "$WORKDIR/overlay/var/log/orbis.log"
 
 cat > "$WORKDIR/overlay/etc/hosts" <<'EOF'
 127.0.0.1 localhost
@@ -109,16 +112,19 @@ cat > "$WORKDIR/overlay/root/.profile" <<'EOF'
 export HOSTNAME=orbis
 export PS1='root@orbis:\w# '
 alias status-orbis='orbis --status'
+alias log-orbis='orbis-log'
 EOF
 
 cat > "$WORKDIR/overlay/usr/local/bin/orbis-login" <<'EOF'
 #!/bin/sh
 hostname orbis 2>/dev/null || true
+mkdir -p /var/log
+printf '%s OrbisOS iniciou em %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf boot)" "$(uname -r)" >> /var/log/orbis.log
 /usr/local/bin/orbis --status
 exec /bin/ash -l
 EOF
 
-for file in orbis orbis-wifi orbis-install orbis-update; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log; do
   install -m 0755 "$CORE_DIR/$file" "$WORKDIR/overlay/usr/local/bin/$file"
 done
 chmod +x "$WORKDIR/overlay/usr/local/bin/orbis-login"
