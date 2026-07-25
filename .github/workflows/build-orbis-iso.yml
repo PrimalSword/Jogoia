@@ -16,21 +16,25 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie-slim
     timeout-minutes: 60
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Install build tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y live-build debootstrap xorriso isolinux syslinux-common
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git live-build debootstrap xorriso \
+            isolinux syslinux-common squashfs-tools
+
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Build OrbisOS
         run: |
           chmod +x orbis-build.sh
-          sudo ./orbis-build.sh
+          ./orbis-build.sh
 
       - name: Show generated files
         run: ls -lh dist/
