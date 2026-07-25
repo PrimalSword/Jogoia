@@ -6,6 +6,8 @@ config_version=5
 config/name="ECO: Último Toque"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.3", "GL Compatibility")
+config/icon="res://assets/icon.svg"
+boot_splash/image="res://assets/icon.svg"
 boot_splash/bg_color=Color(0.025, 0.03, 0.06, 1)
 
 [display]
@@ -20,9 +22,3 @@ window/handheld/orientation=1
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 environment/defaults/default_clear_color=Color(0.025, 0.03, 0.06, 1)
-
-[input]
-tap={
-"deadzone": 0.5,
-"events": [Object(InputEventMouseButton,"button_index":1), Object(InputEventScreenTouch)]
-}
