@@ -34,6 +34,7 @@ lb config noauto \
   --debian-installer none \
   --archive-areas "main contrib non-free-firmware" \
   --apt-recommends false \
+  --security false \
   --memtest none \
   --iso-application "OrbisOS" \
   --iso-publisher "Orbis Project" \
@@ -87,7 +88,6 @@ cat > config/includes.chroot/usr/local/bin/orbis <<'EOF'
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import socket
@@ -178,7 +178,7 @@ chmod +x config/hooks/live/010-orbis.hook.chroot
 
 lb build
 
-ISO_PATH="$(find . -maxdepth 1 -type f -name 'live-image-*.hybrid.iso' -o -name 'live-image-*.iso' | head -n 1)"
+ISO_PATH="$(find . -maxdepth 1 -type f \( -name 'live-image-*.hybrid.iso' -o -name 'live-image-*.iso' \) | head -n 1)"
 if [[ -z "$ISO_PATH" ]]; then
   echo "A ISO não foi encontrada após o build." >&2
   exit 1
