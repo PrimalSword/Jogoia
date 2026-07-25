@@ -1,6 +1,6 @@
 #!/bin/sh
 
-VERSION="0.2"
+VERSION="0.2.1"
 
 show_status() {
   MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"
@@ -30,9 +30,10 @@ while :; do
   printf '%s\n' '1 - Configurar Wi-Fi'
   printf '%s\n' '2 - Instalar no cartão/disco'
   printf '%s\n' '3 - Atualizar Orbis'
-  printf '%s\n' '4 - Atualizar status'
-  printf '%s\n' '5 - Reiniciar'
-  printf '%s\n' '6 - Desligar'
+  printf '%s\n' '4 - Ver logs / rolar histórico'
+  printf '%s\n' '5 - Atualizar status'
+  printf '%s\n' '6 - Reiniciar'
+  printf '%s\n' '7 - Desligar'
   printf '%s\n' '0 - Voltar ao terminal'
   printf '%s'   'Escolha: '
   read -r choice
@@ -41,9 +42,10 @@ while :; do
     1) orbis-wifi; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
     2) orbis-install; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
     3) orbis-update; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    4) show_status ;;
-    5) reboot ;;
-    6) poweroff ;;
+    4) orbis-log; show_status ;;
+    5) show_status ;;
+    6) reboot ;;
+    7) poweroff ;;
     0) exit 0 ;;
     *) printf 'Opção inválida.\n' ;;
   esac
