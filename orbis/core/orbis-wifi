@@ -1,0 +1,39 @@
+#!/bin/sh
+set -u
+
+printf '%s\n' 'ORBIS OS - CONFIGURAÇÃO DE REDE'
+printf '%s\n' '---------------------------------------------'
+
+if command -v rfkill >/dev/null 2>&1; then
+  rfkill unblock all 2>/dev/null || true
+fi
+
+for module in ath9k ath5k iwlwifi rtl8xxxu rtl8192ce rtl8192se b43 brcmsmac; do
+  modprobe "$module" 2>/dev/null || true
+done
+
+INTERFACES="$(find /sys/class/net -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | grep -v '^lo$' || true)"
+
+if [ -z "$INTERFACES" ]; then
+  printf '%s\n' 'Nenhuma placa de rede foi reconhecida.'
+  printf '%s\n' 'Confira a chave física/Fn do Wi-Fi e tente novamente.'
+  if command -v lspci >/dev/null 2>&1; then
+    printf '\nDispositivos de rede encontrados no PCI:\n'
+    lspci -nn | grep -Ei 'network|wireless|ethernet' || true
+  fi
+  exit 1
+fi
+
+printf 'Interfaces encontradas: %s\n\n' "$INTERFACES"
+
+if ! command -v setup-interfaces >/dev/null 2>&1; then
+  printf '%s\n' 'O configurador de rede não está disponível nesta imagem.'
+  exit 1
+fi
+
+setup-interfaces
+rc-service networking restart 2>/dev/null || rc-service networking start 2>/dev/null || true
+
+sleep 2
+printf '\nEstado atual:\n'
+ip -brief address 2>/dev/null || ip address
