@@ -1,0 +1,13 @@
+#!/bin/sh
+set -u
+
+LOGFILE="/var/log/orbis.log"
+
+mkdir -p /var/log
+[ -f "$LOGFILE" ] || printf '%s\n' 'OrbisOS: nenhum evento registrado ainda.' > "$LOGFILE"
+
+if command -v less >/dev/null 2>&1; then
+  less -R "$LOGFILE"
+else
+  more "$LOGFILE"
+fi
