@@ -1,39 +1,47 @@
 package com.primalsword.eco
 
 import android.content.Context
-import android.graphics.*
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.MotionEvent
 import android.view.View
-import kotlin.math.abs
-import kotlin.math.max
+import kotlin.math.hypot
 import kotlin.math.min
-import kotlin.random.Random
 
-data class Gate(var x: Float, val center: Float, val gap: Float, var passed: Boolean = false)
-data class EchoPoint(val score: Float, val y: Float)
+private const val CYCLE_SECONDS = 8f
+private const val SAMPLE_INTERVAL = 0.05f
+
+data class TrackPoint(val t: Float, val x: Float, val y: Float)
+data class Echo(val track: List<TrackPoint>, val color: Int)
 
 class GameView(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val prefs = context.getSharedPreferences("eco_save", Context.MODE_PRIVATE)
-    private val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 35)
+    private val prefs = context.getSharedPreferences("eco_paradoxo", Context.MODE_PRIVATE)
+    private val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 28)
     private val vibrator = context.getSystemService(Vibrator::class.java)
-    private val gates = mutableListOf<Gate>()
-    private val run = mutableListOf<EchoPoint>()
-    private var previous = mutableListOf<EchoPoint>()
-    private var state = 0 // 0 menu, 1 playing, 2 game over
+
+    private var state = 0 // 0 menu, 1 playing, 2 won
+    private var level = prefs.getInt("level", 1).coerceAtLeast(1)
+    private var cyclesUsed = 0
+    private var cycleTime = 0f
+    private var sampleTimer = 0f
+    private var beatTimer = 0f
+    private var playerX = 0f
     private var playerY = 0f
-    private var velocity = 0f
-    private var gravity = -1f
-    private var score = 0f
-    private var best = prefs.getInt("best", 0)
-    private var shards = prefs.getInt("shards", 0)
-    private var spawn = 0f
-    private var sample = 0f
+    private var targetX = 0f
+    private var targetY = 0f
+    private var dragging = false
     private var lastFrame = System.nanoTime()
+
+    private val currentTrack = mutableListOf<TrackPoint>()
+    private val echoes = mutableListOf<Echo>()
 
     init {
         isFocusable = true
@@ -47,45 +55,73 @@ class GameView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.action != MotionEvent.ACTION_DOWN) return true
-        if (state != 1) startGame() else flip()
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (state == 0 || state == 2) {
+                    startLevel()
+                    return true
+                }
+                dragging = true
+                targetX = event.x
+                targetY = event.y
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (state == 1) {
+                    targetX = event.x
+                    targetY = event.y
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> dragging = false
+        }
         return true
     }
 
-    private fun startGame() {
+    private fun startLevel() {
         state = 1
-        playerY = height * .5f
-        velocity = -420f
-        gravity = -1f
-        score = 0f
-        spawn = .4f
-        sample = 0f
-        gates.clear()
-        run.clear()
-        gates += newGate(width * 1.15f)
-        tone.startTone(ToneGenerator.TONE_PROP_BEEP, 60)
+        cyclesUsed = 0
+        echoes.clear()
+        beginCycle()
+        tone.startTone(ToneGenerator.TONE_PROP_BEEP, 90)
     }
 
-    private fun flip() {
-        gravity *= -1f
-        velocity = gravity * 950f
-        tone.startTone(ToneGenerator.TONE_PROP_ACK, 35)
-        if (android.os.Build.VERSION.SDK_INT >= 26) vibrator?.vibrate(VibrationEffect.createOneShot(18, 70))
+    private fun beginCycle() {
+        cyclesUsed++
+        cycleTime = 0f
+        sampleTimer = 0f
+        beatTimer = 0f
+        currentTrack.clear()
+        playerX = width * .14f
+        playerY = height * .50f
+        targetX = playerX
+        targetY = playerY
+        dragging = false
+        safeVibrate(28, 55)
     }
 
-    private fun die() {
-        state = 2
-        previous = run.toMutableList()
-        best = max(best, score.toInt())
-        prefs.edit().putInt("best", best).putInt("shards", shards).apply()
-        tone.startTone(ToneGenerator.TONE_PROP_NACK, 130)
-        if (android.os.Build.VERSION.SDK_INT >= 26) vibrator?.vibrate(VibrationEffect.createOneShot(90, 120))
+    private fun finishCycle() {
+        if (currentTrack.isNotEmpty()) {
+            val colors = intArrayOf(
+                Color.rgb(196, 92, 255),
+                Color.rgb(255, 96, 160),
+                Color.rgb(255, 190, 70),
+                Color.rgb(110, 255, 160)
+            )
+            echoes += Echo(currentTrack.toList(), colors[(echoes.size) % colors.size])
+        }
+        beginCycle()
     }
 
-    private fun newGate(x: Float): Gate {
-        val gap = max(height * .20f, height * (.30f - score / 6000f))
-        val margin = height * .14f + gap / 2
-        return Gate(x, Random.nextFloat() * (height - margin * 2) + margin, gap)
+    private fun safeVibrate(ms: Long, amplitude: Int) {
+        try {
+            if (Build.VERSION.SDK_INT >= 26) {
+                vibrator?.vibrate(VibrationEffect.createOneShot(ms, amplitude))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(ms)
+            }
+        } catch (_: Exception) {
+            // Vibração é um bônus. Nunca deve derrubar o jogo.
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -94,43 +130,93 @@ class GameView(context: Context) : View(context) {
         lastFrame = now
         if (state == 1) update(dt)
         drawBackground(canvas)
-        if (state == 0) drawMenu(canvas) else drawGame(canvas)
+        when (state) {
+            0 -> drawMenu(canvas)
+            1 -> drawGame(canvas)
+            2 -> drawVictory(canvas)
+        }
         postInvalidateOnAnimation()
     }
 
     private fun update(dt: Float) {
-        score += dt * 10f
-        val speed = min(width * 1.05f, width * (.42f + score / 900f))
-        velocity += gravity * height * 1.65f * dt
-        velocity = velocity.coerceIn(-height * .95f, height * .95f)
-        playerY += velocity * dt
-        val top = height * .09f
-        val bottom = height * .91f
-        if (playerY < top || playerY > bottom) return die()
+        cycleTime += dt
+        beatTimer -= dt
+        if (beatTimer <= 0f) {
+            val toneId = if ((cycleTime * 2).toInt() % 4 == 0) ToneGenerator.TONE_PROP_ACK else ToneGenerator.TONE_PROP_BEEP
+            tone.startTone(toneId, 34)
+            beatTimer = .5f
+        }
 
-        spawn -= dt
-        if (spawn <= 0f) {
-            gates += newGate(width * 1.1f)
-            spawn = max(.58f, 1.18f - score / 520f)
+        val speed = width * 2.6f
+        val dx = targetX - playerX
+        val dy = targetY - playerY
+        val distance = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        if (dragging && distance > 1f) {
+            val step = min(distance, speed * dt)
+            playerX += dx / distance * step
+            playerY += dy / distance * step
         }
-        for (g in gates) {
-            g.x -= speed * dt
-            if (!g.passed && g.x < width * .21f) { g.passed = true; shards++ }
-            if (abs(g.x - width * .21f) < width * .055f &&
-                (playerY < g.center - g.gap / 2 || playerY > g.center + g.gap / 2)) return die()
+        playerX = playerX.coerceIn(width * .06f, width * .94f)
+        playerY = playerY.coerceIn(height * .13f, height * .88f)
+
+        sampleTimer -= dt
+        if (sampleTimer <= 0f) {
+            currentTrack += TrackPoint(cycleTime, playerX, playerY)
+            sampleTimer = SAMPLE_INTERVAL
         }
-        gates.removeAll { it.x < -width * .15f }
-        sample -= dt
-        if (sample <= 0f) { run += EchoPoint(score, playerY); sample = .08f }
+
+        val padA = padA()
+        val padB = padB()
+        val aActive = actorOnPad(playerX, playerY, padA.first, padA.second) || echoes.any {
+            val p = echoPosition(it, cycleTime)
+            p != null && actorOnPad(p.first, p.second, padA.first, padA.second)
+        }
+        val bActive = actorOnPad(playerX, playerY, padB.first, padB.second) || echoes.any {
+            val p = echoPosition(it, cycleTime)
+            p != null && actorOnPad(p.first, p.second, padB.first, padB.second)
+        }
+
+        if (aActive && bActive) {
+            val portal = portal()
+            if (hypot((playerX - portal.first).toDouble(), (playerY - portal.second).toDouble()) < width * .085f) {
+                win()
+                return
+            }
+        }
+
+        if (cycleTime >= CYCLE_SECONDS) finishCycle()
     }
 
+    private fun win() {
+        state = 2
+        level++
+        prefs.edit().putInt("level", level).apply()
+        tone.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 300)
+        safeVibrate(140, 160)
+    }
+
+    private fun actorOnPad(x: Float, y: Float, px: Float, py: Float): Boolean {
+        return hypot((x - px).toDouble(), (y - py).toDouble()) < width * .09f
+    }
+
+    private fun echoPosition(echo: Echo, time: Float): Pair<Float, Float>? {
+        if (echo.track.isEmpty()) return null
+        val index = (time / SAMPLE_INTERVAL).toInt().coerceIn(0, echo.track.lastIndex)
+        val p = echo.track[index]
+        return p.x to p.y
+    }
+
+    private fun padA() = width * .27f to height * .34f
+    private fun padB() = width * .72f to height * .67f
+    private fun portal() = width * .82f to height * .25f
+
     private fun drawBackground(c: Canvas) {
-        c.drawColor(Color.rgb(7, 9, 26))
+        c.drawColor(Color.rgb(5, 7, 20))
         paint.strokeWidth = 1f
-        for (i in 0..14) {
-            paint.color = Color.argb(22, 88, 230, 255)
-            val y = height * i / 14f
-            c.drawLine(0f, y, width.toFloat(), y - 45f, paint)
+        for (i in 0..18) {
+            paint.color = Color.argb(20, 88, 230, 255)
+            val y = height * i / 18f
+            c.drawLine(0f, y, width.toFloat(), y - 60f, paint)
         }
     }
 
@@ -142,46 +228,88 @@ class GameView(context: Context) : View(context) {
     }
 
     private fun drawMenu(c: Canvas) {
-        text(c, "ECO", height * .19f, width * .18f, Color.WHITE)
-        text(c, "ÚLTIMO TOQUE", height * .25f, width * .055f, Color.rgb(88,230,255))
-        text(c, "VOCÊ JOGA CONTRA O SEU PASSADO", height * .31f, width * .029f, Color.LTGRAY)
-        paint.color = Color.rgb(88,230,255)
-        c.drawCircle(width/2f, height*.50f, width*.095f, paint)
-        paint.color = Color.rgb(7,9,26)
-        c.drawCircle(width/2f, height*.50f, width*.048f, paint)
-        text(c, "TOQUE PARA INICIAR", height * .69f, width * .052f, Color.WHITE)
-        text(c, "toque para inverter a gravidade", height * .74f, width * .030f, Color.GRAY)
-        text(c, "RECORDE  %06d".format(best), height * .84f, width * .040f, Color.rgb(196,92,255))
-        text(c, "FRAGMENTOS  $shards", height * .88f, width * .034f, Color.rgb(88,230,255))
+        text(c, "ECO", height * .18f, width * .18f, Color.WHITE)
+        text(c, "PARADOXO", height * .25f, width * .072f, Color.rgb(88, 230, 255))
+        text(c, "SEUS FRACASSOS VIRAM ALIADOS", height * .32f, width * .034f, Color.LTGRAY)
+
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = width * .018f
+        paint.color = Color.rgb(196, 92, 255)
+        c.drawCircle(width / 2f, height * .51f, width * .12f, paint)
+        paint.color = Color.rgb(88, 230, 255)
+        c.drawCircle(width / 2f, height * .51f, width * .066f, paint)
+        paint.style = Paint.Style.FILL
+
+        text(c, "TOQUE PARA INICIAR", height * .72f, width * .052f, Color.WHITE)
+        text(c, "arraste para mover • cada ciclo dura 8 segundos", height * .77f, width * .029f, Color.GRAY)
+        text(c, "NÍVEL  $level", height * .86f, width * .040f, Color.rgb(196, 92, 255))
     }
 
     private fun drawGame(c: Canvas) {
-        val top = height * .09f
-        val bottom = height * .91f
-        paint.color = Color.rgb(37,51,84)
-        paint.strokeWidth = 4f
-        c.drawLine(0f, top, width.toFloat(), top, paint)
-        c.drawLine(0f, bottom, width.toFloat(), bottom, paint)
-        for (g in gates) {
-            paint.color = Color.rgb(24,40,75)
-            c.drawRect(g.x-width*.045f, top, g.x+width*.045f, g.center-g.gap/2, paint)
-            c.drawRect(g.x-width*.045f, g.center+g.gap/2, g.x+width*.045f, bottom, paint)
+        val padA = padA()
+        val padB = padB()
+        val portal = portal()
+
+        drawPad(c, padA.first, padA.second, Color.rgb(88, 230, 255))
+        drawPad(c, padB.first, padB.second, Color.rgb(196, 92, 255))
+
+        val aActive = actorOnPad(playerX, playerY, padA.first, padA.second) || echoes.any {
+            val p = echoPosition(it, cycleTime)
+            p != null && actorOnPad(p.first, p.second, padA.first, padA.second)
         }
-        val ghost = previous.getOrNull((score/.8f).toInt())
-        if (ghost != null) {
-            paint.color = Color.argb(80,196,92,255)
-            c.drawCircle(width*.21f, ghost.y, width*.032f, paint)
+        val bActive = actorOnPad(playerX, playerY, padB.first, padB.second) || echoes.any {
+            val p = echoPosition(it, cycleTime)
+            p != null && actorOnPad(p.first, p.second, padB.first, padB.second)
         }
-        paint.color = if (gravity < 0) Color.rgb(88,230,255) else Color.rgb(196,92,255)
-        c.drawCircle(width*.21f, playerY, width*.034f, paint)
-        text(c, "%06d".format(score.toInt()), height*.065f, width*.060f, Color.WHITE)
-        if (state == 2) {
-            paint.color = Color.argb(190,4,6,18)
-            c.drawRect(0f,0f,width.toFloat(),height.toFloat(),paint)
-            text(c,"SINAL PERDIDO",height*.38f,width*.070f,Color.WHITE)
-            text(c,"%06d".format(score.toInt()),height*.49f,width*.13f,Color.rgb(88,230,255))
-            text(c,"TOQUE PARA REESCREVER",height*.64f,width*.045f,Color.WHITE)
-            text(c,"seu próximo inimigo acaba de nascer",height*.70f,width*.030f,Color.LTGRAY)
+        val portalOpen = aActive && bActive
+
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = width * .018f
+        paint.color = if (portalOpen) Color.rgb(110, 255, 160) else Color.rgb(70, 78, 110)
+        c.drawCircle(portal.first, portal.second, width * .085f, paint)
+        paint.style = Paint.Style.FILL
+        if (portalOpen) {
+            paint.color = Color.argb(60, 110, 255, 160)
+            c.drawCircle(portal.first, portal.second, width * .075f, paint)
         }
+
+        for (echo in echoes) {
+            val p = echoPosition(echo, cycleTime) ?: continue
+            paint.color = Color.argb(150, Color.red(echo.color), Color.green(echo.color), Color.blue(echo.color))
+            c.drawCircle(p.first, p.second, width * .038f, paint)
+        }
+
+        paint.color = Color.rgb(240, 250, 255)
+        c.drawCircle(playerX, playerY, width * .042f, paint)
+        paint.color = Color.rgb(88, 230, 255)
+        c.drawCircle(playerX, playerY, width * .020f, paint)
+
+        val remaining = (CYCLE_SECONDS - cycleTime).coerceAtLeast(0f)
+        text(c, "CICLO $cyclesUsed", height * .055f, width * .042f, Color.WHITE)
+        text(c, String.format("%.1f", remaining), height * .10f, width * .072f,
+            if (remaining < 2f) Color.rgb(255, 96, 120) else Color.rgb(88, 230, 255))
+        text(c, "ECOS ${echoes.size}", height * .94f, width * .036f, Color.rgb(196, 92, 255))
+        text(c, if (portalOpen) "PORTAL ABERTO" else "ATIVE OS DOIS NÚCLEOS", height * .985f, width * .030f,
+            if (portalOpen) Color.rgb(110, 255, 160) else Color.LTGRAY)
+    }
+
+    private fun drawPad(c: Canvas, x: Float, y: Float, color: Int) {
+        paint.color = Color.argb(45, Color.red(color), Color.green(color), Color.blue(color))
+        c.drawCircle(x, y, width * .10f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = width * .014f
+        paint.color = color
+        c.drawCircle(x, y, width * .072f, paint)
+        paint.style = Paint.Style.FILL
+    }
+
+    private fun drawVictory(c: Canvas) {
+        paint.color = Color.argb(225, 3, 5, 15)
+        c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+        text(c, "PARADOXO ESTABILIZADO", height * .34f, width * .060f, Color.WHITE)
+        text(c, "NÍVEL CONCLUÍDO", height * .43f, width * .090f, Color.rgb(110, 255, 160))
+        text(c, "CICLOS USADOS  $cyclesUsed", height * .54f, width * .042f, Color.rgb(196, 92, 255))
+        text(c, "TOQUE PARA O PRÓXIMO", height * .70f, width * .048f, Color.WHITE)
+        text(c, "cada eco adiciona uma camada ao ritmo", height * .76f, width * .030f, Color.GRAY)
     }
 }
