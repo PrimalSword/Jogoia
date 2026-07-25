@@ -1,0 +1,56 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  echo "Uso: sudo orbis-mode terminal|desktop|status"
+  exit 2
+}
+
+[ "$(id -u)" -eq 0 ] || { echo "Execute com sudo."; exit 1; }
+MODE=${1:-}
+
+find_display_service() {
+  for svc in slim lightdm display-manager xdm; do
+    if [ -e "/etc/sv/$svc" ]; then
+      echo "$svc"
+      return 0
+    fi
+  done
+  return 1
+}
+
+case "$MODE" in
+  terminal)
+    svc=$(find_display_service || true)
+    if [ -n "$svc" ]; then
+      rm -f "/var/service/$svc" "/etc/service/$svc" 2>/dev/null || true
+      printf '%s\n' "$svc" > /etc/orbis/display-service
+      echo "Interface gráfica desativada no próximo boot ($svc)."
+    else
+      echo "Nenhum serviço gráfico runit conhecido foi encontrado. Nada foi removido."
+    fi
+    ;;
+  desktop)
+    svc=$(cat /etc/orbis/display-service 2>/dev/null || true)
+    if [ -z "$svc" ]; then
+      svc=$(find_display_service || true)
+    fi
+    if [ -n "$svc" ] && [ -d "/etc/sv/$svc" ]; then
+      mkdir -p /var/service
+      ln -sfn "/etc/sv/$svc" "/var/service/$svc"
+      echo "Interface gráfica restaurada ($svc)."
+    else
+      echo "Não foi possível localizar o serviço gráfico para restaurar."
+      exit 1
+    fi
+    ;;
+  status)
+    svc=$(find_display_service || true)
+    if [ -n "$svc" ] && { [ -L "/var/service/$svc" ] || [ -L "/etc/service/$svc" ]; }; then
+      echo "Modo atual: desktop ($svc ativo no boot)"
+    else
+      echo "Modo atual: terminal"
+    fi
+    ;;
+  *) usage ;;
+esac
