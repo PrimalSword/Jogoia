@@ -3,12 +3,13 @@ set -eu
 REPO_URL="https://github.com/PrimalSword/Jogoia.git"
 BRANCH="main"
 CHECKOUT="/opt/orbis-src"
-CORE="$CHECKOUT/orbis/core"
+CORE_DIR="$CHECKOUT/orbis/core"
 RELEASE_FILE="/etc/orbis-release"
 LOGFILE="/var/log/orbis.log"
 BACKUP_DIR="/opt/orbis-backup"
 LIB_DIR="/usr/local/lib/orbis"
-VERSION="2.0.0"
+RUNTIME_CORE="$LIB_DIR/orbis_core.py"
+VERSION="2.0.1"
 
 mkdir -p /opt /var/log /usr/local/bin "$LIB_DIR" "$BACKUP_DIR"
 mount -o remount,rw / 2>/dev/null || true
@@ -29,46 +30,50 @@ ensure_packages(){
   repair_apk
   apk add --force-broken-world ca-certificates $missing
   update-ca-certificates 2>/dev/null || true
-  command -v git >/dev/null 2>&1 || { printf '%s\n' 'Falha ao instalar Git.'; exit 1; }
-  command -v python3 >/dev/null 2>&1 || { printf '%s\n' 'Falha ao instalar Python 3.'; exit 1; }
 }
-ensure_clock(){
-  year="$(date +%Y 2>/dev/null || printf 0)"
-  [ "$year" -ge 2024 ] 2>/dev/null && return 0
-  if [ -x /usr/local/bin/orbis-time ]; then /usr/local/bin/orbis-time; elif command -v ntpd >/dev/null 2>&1; then ntpd -q -n -p pool.ntp.org >/tmp/orbis-time.log 2>&1; else return 1; fi
-}
+ensure_clock(){ year="$(date +%Y 2>/dev/null || printf 0)"; [ "$year" -ge 2024 ] 2>/dev/null && return 0; [ -x /usr/local/bin/orbis-time ] && /usr/local/bin/orbis-time || ntpd -q -n -p pool.ntp.org >/tmp/orbis-time.log 2>&1; }
 backup_current(){
-  rm -rf "$BACKUP_DIR/current"
-  mkdir -p "$BACKUP_DIR/current/bin" "$BACKUP_DIR/current/lib"
+  rm -rf "$BACKUP_DIR/current"; mkdir -p "$BACKUP_DIR/current/bin" "$BACKUP_DIR/current/lib"
   for file in /usr/local/bin/orbis*; do [ -f "$file" ] && cp -p "$file" "$BACKUP_DIR/current/bin/"; done
-  [ -f "$LIB_DIR/orbis_core.py" ] && cp -p "$LIB_DIR/orbis_core.py" "$BACKUP_DIR/current/lib/"
+  [ -f "$RUNTIME_CORE" ] && cp -p "$RUNTIME_CORE" "$BACKUP_DIR/current/lib/"
   [ -f "$RELEASE_FILE" ] && cp -p "$RELEASE_FILE" "$BACKUP_DIR/current/orbis-release"
 }
 restore_backup(){
   printf '%s\n' 'Falha detectada. Restaurando versão anterior...'
   for file in "$BACKUP_DIR/current/bin"/*; do [ -f "$file" ] && install -m 0755 "$file" "/usr/local/bin/${file##*/}"; done
-  [ -f "$BACKUP_DIR/current/lib/orbis_core.py" ] && install -m 0644 "$BACKUP_DIR/current/lib/orbis_core.py" "$LIB_DIR/orbis_core.py"
+  [ -f "$BACKUP_DIR/current/lib/orbis_core.py" ] && install -m 0644 "$BACKUP_DIR/current/lib/orbis_core.py" "$RUNTIME_CORE"
   [ -f "$BACKUP_DIR/current/orbis-release" ] && cp "$BACKUP_DIR/current/orbis-release" "$RELEASE_FILE"
   sync; log 'Atualização falhou; backup restaurado.'
 }
+health_check(){ python3 - <<'PY' >/dev/null 2>&1
+import urllib.request
+with urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2) as r:
+    if r.read().strip() != b'ok': raise SystemExit(1)
+PY
+}
 trap 'restore_backup' INT TERM HUP
-printf '%s\n' 'ORBIS OS  •  ATUALIZAÇÃO 2.0' '─────────────────────────────────────────────'
+printf '%s\n' 'ORBIS OS  •  ATUALIZAÇÃO SEGURA' '─────────────────────────────────────────────'
 ping -c 1 -W 5 github.com >/dev/null 2>&1 || { printf '%s\n' 'Sem acesso ao GitHub. Confira o Wi-Fi.'; exit 1; }
 ensure_clock
 ensure_packages
 backup_current
+[ -x /usr/local/bin/orbis-web ] && /usr/local/bin/orbis-web --stop >/dev/null 2>&1 || true
 if [ -d "$CHECKOUT/.git" ]; then git -C "$CHECKOUT" fetch origin "$BRANCH"; git -C "$CHECKOUT" reset --hard "origin/$BRANCH"; else rm -rf "$CHECKOUT"; git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"; fi
-[ -d "$CORE" ] || { restore_backup; exit 1; }
-for file in "$CORE"/orbis*; do
+[ -d "$CORE_DIR" ] || { restore_backup; exit 1; }
+for file in "$CORE_DIR"/orbis*; do
   [ -f "$file" ] || continue
   case "${file##*/}" in orbis_core.py) continue ;; esac
-  install -m 0755 "$file" "/usr/local/bin/${file##*/}"
+  tmp="/usr/local/bin/.${file##*/}.tmp.$$"
+  install -m 0755 "$file" "$tmp"
+  mv -f "$tmp" "/usr/local/bin/${file##*/}"
 done
-[ -f "$CORE/orbis_core.py" ] || { restore_backup; printf '%s\n' 'orbis_core.py ausente.'; exit 1; }
-install -m 0644 "$CORE/orbis_core.py" "$LIB_DIR/orbis_core.py"
-python3 -m py_compile "$LIB_DIR/orbis_core.py" || { restore_backup; printf '%s\n' 'Validação do núcleo Python falhou.'; exit 1; }
-COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
-SHORT="$(git -C "$CHECKOUT" rev-parse --short HEAD)"
+[ -s "$CORE_DIR/orbis_core.py" ] || { restore_backup; printf '%s\n' 'orbis_core.py ausente.'; exit 1; }
+tmp_core="$LIB_DIR/.orbis_core.py.tmp.$$"
+install -m 0644 "$CORE_DIR/orbis_core.py" "$tmp_core"
+python3 -m py_compile "$tmp_core" || { rm -f "$tmp_core"; restore_backup; printf '%s\n' 'Validação do núcleo Python falhou.'; exit 1; }
+mv -f "$tmp_core" "$RUNTIME_CORE"
+[ -r "$RUNTIME_CORE" ] || { restore_backup; printf '%s\n' 'Núcleo não foi instalado no caminho esperado.'; exit 1; }
+COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"; SHORT="$(git -C "$CHECKOUT" rev-parse --short HEAD)"
 cat > "$RELEASE_FILE" <<EOF
 ORBIS_VERSION=$VERSION
 ORBIS_BRANCH=$BRANCH
@@ -77,6 +82,10 @@ ORBIS_REPOSITORY=$REPO_URL
 UPDATED_AT=$(date -Iseconds 2>/dev/null || date)
 EOF
 sync
+if [ -x /usr/local/bin/orbis-web ]; then
+  /usr/local/bin/orbis-web --start || { restore_backup; printf '%s\n' 'Atualização instalada, mas o Core não iniciou.'; exit 1; }
+  health_check || { restore_backup; printf '%s\n' 'Core iniciou sem responder ao teste de saúde.'; exit 1; }
+fi
 trap - INT TERM HUP
 log "Orbis atualizado com segurança para $COMMIT"
-printf '\nAtualização concluída.\nVersão instalada: %s\nCommit instalado: %s\n' "$VERSION" "$SHORT"
+printf '\nAtualização concluída.\nVersão instalada: %s\nCommit instalado: %s\nCore: saudável\n' "$VERSION" "$SHORT"
