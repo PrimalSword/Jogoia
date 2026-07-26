@@ -1,0 +1,35 @@
+#!/bin/sh
+set -u
+
+printf '%s\n' 'ORBIS TETRIS'
+printf '%s\n' '============================================='
+printf '%s\n' 'Setas: mover e girar | Espaço: queda rápida'
+printf '%s\n' 'Pressione Q para sair.'
+printf '%s\n' '============================================='
+
+# O Orbis pode iniciar a raiz em modo somente leitura.
+mount -o remount,rw / 2>/dev/null || true
+
+if ! command -v tetris >/dev/null 2>&1; then
+  printf '\nTetris ainda não está instalado.\n'
+  printf '%s\n' 'Instalando o pacote leve micro-tetris...'
+
+  if ! command -v apk >/dev/null 2>&1; then
+    printf '%s\n' 'Erro: o gerenciador apk não foi encontrado.'
+    exit 1
+  fi
+
+  apk update || {
+    printf '%s\n' 'Não foi possível atualizar os pacotes. Confira o Wi-Fi.'
+    exit 1
+  }
+
+  apk add micro-tetris || {
+    printf '%s\n' 'Não foi possível instalar micro-tetris.'
+    printf '%s\n' 'Confirme se o repositório community está habilitado em /etc/apk/repositories.'
+    exit 1
+  }
+fi
+
+clear
+exec tetris
