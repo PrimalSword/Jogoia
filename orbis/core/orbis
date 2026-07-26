@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="0.5.0"
+DEFAULT_VERSION="0.6.0"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -74,6 +74,15 @@ storage_status() {
   df -hP / 2>/dev/null | awk 'NR==2 {printf "%s usados de %s (%s)", $3, $2, $5; exit}'
 }
 
+clock_status() {
+  year="$(date +%Y 2>/dev/null || printf 0)"
+  if [ "$year" -ge 2024 ] 2>/dev/null; then
+    date '+%d/%m/%Y %H:%M' 2>/dev/null || printf '%s' 'válido'
+  else
+    printf '%s' 'INCORRETO — sincronize'
+  fi
+}
+
 show_status() {
   MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"
   CPU="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)"
@@ -84,6 +93,7 @@ show_status() {
   UPTIME="$(format_uptime)"
   TEMP="$(cpu_temperature)"
   STORAGE="$(storage_status)"
+  CLOCK="$(clock_status)"
   [ -n "$STORAGE" ] || STORAGE="indisponível"
   LOAD="$(awk '{print $1}' /proc/loadavg 2>/dev/null || printf '?')"
   wifi_status
@@ -101,6 +111,7 @@ show_status() {
   printf ' TEMP.     %s\n' "$TEMP"
   printf ' UPTIME    %s\n' "$UPTIME"
   printf ' DISCO     %s\n' "$STORAGE"
+  printf ' RELÓGIO   %s\n' "$CLOCK"
   printf ' ENERGIA   %s\n' "$POWER"
   printf ' WI-FI     %s  (%s)\n' "$WIFI_SSID" "$WIFI_SIGNAL"
   printf ' IP        %s\n' "$IP"
@@ -133,6 +144,7 @@ while :; do
   printf '%s\n' '  8  Atualizar painel'
   printf '%s\n' '  9  Reiniciar'
   printf '%s\n' ' 10  Desligar'
+  printf '%s\n' ' 11  Sincronizar horário'
   printf '%s\n' '  0  Terminal'
   printf '\n%s' ' orbis › '
   read -r choice || exit 0
@@ -147,6 +159,7 @@ while :; do
     8) show_status ;;
     9) reboot ;;
     10) poweroff ;;
+    11) run_orbis_command orbis-time; pause_menu; show_status ;;
     0) exit 0 ;;
     *) printf 'Opção inválida.\n' ;;
   esac
