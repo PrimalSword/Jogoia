@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="0.2.4"
+DEFAULT_VERSION="0.2.5"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -12,12 +12,67 @@ if [ -f /etc/orbis-release ]; then
 fi
 SHORT_COMMIT="$(printf '%s' "$COMMIT" | cut -c1-8)"
 
+power_status() {
+  BAT_DIR=""
+  AC_ONLINE=""
+
+  for path in /sys/class/power_supply/BAT*; do
+    [ -d "$path" ] || continue
+    BAT_DIR="$path"
+    break
+  done
+
+  for path in /sys/class/power_supply/*; do
+    [ -d "$path" ] || continue
+    [ -f "$path/type" ] || continue
+    TYPE="$(cat "$path/type" 2>/dev/null || true)"
+    case "$TYPE" in
+      Mains|USB|USB_C|USB_PD)
+        if [ -f "$path/online" ]; then
+          VALUE="$(cat "$path/online" 2>/dev/null || printf 0)"
+          [ "$VALUE" = "1" ] && AC_ONLINE="1"
+        fi
+        ;;
+    esac
+  done
+
+  if [ -n "$BAT_DIR" ]; then
+    CAPACITY="$(cat "$BAT_DIR/capacity" 2>/dev/null || true)"
+    STATUS="$(cat "$BAT_DIR/status" 2>/dev/null || true)"
+
+    case "$STATUS" in
+      Charging) LABEL="carregando" ;;
+      Discharging) LABEL="na bateria" ;;
+      Full) LABEL="carregada" ;;
+      "Not charging") LABEL="conectada à energia" ;;
+      *)
+        if [ "$AC_ONLINE" = "1" ]; then
+          LABEL="conectada à energia"
+        else
+          LABEL="na bateria"
+        fi
+        ;;
+    esac
+
+    if [ -n "$CAPACITY" ]; then
+      printf '%s%% (%s)' "$CAPACITY" "$LABEL"
+    else
+      printf '%s' "$LABEL"
+    fi
+  elif [ "$AC_ONLINE" = "1" ]; then
+    printf '%s' 'conectada à energia'
+  else
+    printf '%s' 'indisponível'
+  fi
+}
+
 show_status() {
   MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"
   CPU="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)"
   [ -n "$CPU" ] || CPU="$(uname -m)"
   IP="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)"
   [ -n "$IP" ] || IP="desconectada"
+  POWER="$(power_status)"
 
   clear
   printf '%s\n' '============================================='
@@ -27,6 +82,7 @@ show_status() {
   printf 'Sistema....... iniciado\n'
   printf 'Processador... %s\n' "$CPU"
   printf 'Memória....... %s MB\n' "$MEM_MB"
+  printf 'Energia....... %s\n' "$POWER"
   printf 'Rede.......... %s\n' "$IP"
   printf 'Hostname...... %s\n' "$(hostname 2>/dev/null || printf orbis)"
   printf 'Commit........ %s\n' "$SHORT_COMMIT"
