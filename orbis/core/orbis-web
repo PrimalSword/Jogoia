@@ -1,94 +1,77 @@
 #!/bin/sh
-set -e
+set -eu
 
-BASE="/var/lib/orbis/web"
-HTTP_PIDFILE="/run/orbis-web-http.pid"
-WORKER_PIDFILE="/run/orbis-web-worker.pid"
-LOGFILE="/var/log/orbis-web.log"
+PIDFILE="/run/orbis-core.pid"
+LOGFILE="/var/log/orbis-core.log"
+CORE="/usr/local/lib/orbis/orbis_core.py"
 PORT="${ORBIS_WEB_PORT:-8080}"
-mkdir -p "$BASE" /run /var/log /var/lib/orbis/jobs
+mkdir -p /run /var/log /usr/local/lib/orbis
 
-html_escape() { printf '%s' "${1:-}" | sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g;s/"/\&quot;/g'; }
-pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
-listener_active() { netstat -ltn 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {ok=1} END{exit !ok}'; }
-
-wifi_ssid() {
-  iface=""
-  for path in /sys/class/net/*; do
-    [ -e "$path" ] || continue
-    name="${path##*/}"
-    case "$name" in wlan*|wlp*) iface="$name"; break ;; esac
-  done
-  [ -n "$iface" ] || { printf desconectado; return; }
-  value="$(iw dev "$iface" link 2>/dev/null | awk -F': ' '/SSID:/ {print $2; exit}')"
-  [ -n "$value" ] && printf '%s' "$value" || printf desconectado
+pid_alive() {
+  [ -f "$PIDFILE" ] || return 1
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
-render() {
-  mem_total="$(awk '/MemTotal/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"
-  mem_avail="$(awk '/MemAvailable/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"
-  load="$(awk '{print $1" "$2" "$3}' /proc/loadavg 2>/dev/null || printf '?')"
-  uptime_s="$(cut -d. -f1 /proc/uptime 2>/dev/null || printf 0)"
-  uptime_h="$((uptime_s / 3600))h $(((uptime_s % 3600) / 60))m"
-  disk="$(df -hP / 2>/dev/null | awk 'NR==2 {print $3" / "$2" ("$5")"}')"
-  ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)"
-  [ -n "$ip" ] || ip="desconectado"
-  ssid="$(wifi_ssid)"
-  jobs_total="$(find /var/lib/orbis/jobs -maxdepth 1 -name '*.job' 2>/dev/null | wc -l | tr -d ' ')"
-  jobs_enabled="$(find /var/lib/orbis/jobs -maxdepth 1 -name '*.enabled' 2>/dev/null | wc -l | tr -d ' ')"
-  version="1.0.0"; commit="desconhecido"
-  if [ -f /etc/orbis-release ]; then
-    ORBIS_VERSION=""; ORBIS_COMMIT=""
-    . /etc/orbis-release 2>/dev/null || true
-    [ -n "${ORBIS_VERSION:-}" ] && version="$ORBIS_VERSION"
-    [ -n "${ORBIS_COMMIT:-}" ] && commit="$ORBIS_COMMIT"
-  fi
-  commit="$(printf '%s' "$commit" | cut -c1-8)"
-  now="$(date '+%d/%m/%Y %H:%M:%S' 2>/dev/null || printf indisponível)"
-  cat > "$BASE/index.html" <<EOF
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>Orbis OS</title><style>body{font-family:system-ui;background:#0b0f14;color:#eaf2ff;margin:0;padding:20px}.wrap{max-width:780px;margin:auto}.head{display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid #526070;padding-bottom:12px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:18px}.card{background:#141b24;border:1px solid #273444;border-radius:12px;padding:16px}.k{font-size:12px;color:#93a4b8;text-transform:uppercase}.v{font-size:21px;margin-top:6px;word-break:break-word}.ok{color:#8ef0b1}.foot{color:#7f8da0;font-size:12px;margin-top:18px}</style></head><body><div class="wrap"><div class="head"><div><div class="k">ORBIS OS</div><div class="v ok">ONLINE</div></div><div>v$(html_escape "$version") · $(html_escape "$commit")</div></div><div class="grid"><div class="card"><div class="k">Memória</div><div class="v">${mem_avail} MB livres / ${mem_total} MB</div></div><div class="card"><div class="k">Carga</div><div class="v">$(html_escape "$load")</div></div><div class="card"><div class="k">Uptime</div><div class="v">$(html_escape "$uptime_h")</div></div><div class="card"><div class="k">Disco</div><div class="v">$(html_escape "$disk")</div></div><div class="card"><div class="k">Wi-Fi</div><div class="v">$(html_escape "$ssid")</div></div><div class="card"><div class="k">IP</div><div class="v">$(html_escape "$ip")</div></div><div class="card"><div class="k">Automações</div><div class="v">${jobs_enabled} ativas / ${jobs_total}</div></div><div class="card"><div class="k">Relógio</div><div class="v">$(html_escape "$now")</div></div></div><div class="foot">Painel local somente leitura · atualização a cada 10 segundos</div></div></body></html>
-EOF
-}
-
-worker() { while :; do render >>"$LOGFILE" 2>&1 || true; sleep 10; done; }
-
-stop() {
-  for file in "$HTTP_PIDFILE" "$WORKER_PIDFILE"; do
-    if pid_alive "$file"; then kill "$(cat "$file")" 2>/dev/null || true; fi
-    rm -f "$file"
-  done
-  killall httpd 2>/dev/null || true
+listener_active() {
+  netstat -ltn 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}'
 }
 
 start() {
-  if listener_active; then printf 'Painel já está ativo na porta %s.\n' "$PORT"; return 0; fi
-  stop
-  : > "$LOGFILE"
-  render >>"$LOGFILE" 2>&1 || { printf 'Falha ao gerar o painel. Veja %s\n' "$LOGFILE"; return 1; }
-  busybox httpd -f -p "$PORT" -h "$BASE" >>"$LOGFILE" 2>&1 &
-  echo $! > "$HTTP_PIDFILE"
-  worker & echo $! > "$WORKER_PIDFILE"
-  sleep 1
-  if ! pid_alive "$HTTP_PIDFILE" || ! listener_active; then
-    printf 'Falha ao iniciar. Diagnóstico:\n'
+  if pid_alive && listener_active; then
+    printf 'Orbis Core já está ativo na porta %s.\n' "$PORT"
+    return 0
+  fi
+  stop >/dev/null 2>&1 || true
+  command -v python3 >/dev/null 2>&1 || {
+    printf '%s\n' 'Python 3 não está instalado. Execute “Atualizar pelo Git”.'
+    return 1
+  }
+  [ -f "$CORE" ] || {
+    printf 'Núcleo ausente: %s\n' "$CORE"
+    return 1
+  }
+  ORBIS_WEB_PORT="$PORT" python3 "$CORE" >>"$LOGFILE" 2>&1 &
+  echo $! > "$PIDFILE"
+  sleep 2
+  if ! pid_alive || ! listener_active; then
+    printf 'Falha ao iniciar. Últimas mensagens:\n'
     tail -n 20 "$LOGFILE" 2>/dev/null || true
-    stop
+    stop >/dev/null 2>&1 || true
     return 1
   fi
-  host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
-  printf 'Painel iniciado: http://%s:%s\n' "${host:-127.0.0.1}" "$PORT"
+  ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+  printf 'Orbis Core iniciado: http://%s:%s\n' "${ip:-127.0.0.1}" "$PORT"
+}
+
+stop() {
+  if pid_alive; then kill "$(cat "$PIDFILE")" 2>/dev/null || true; sleep 1; fi
+  rm -f "$PIDFILE"
+  printf '%s\n' 'Orbis Core parado.'
 }
 
 status() {
-  if listener_active; then printf 'ATIVO porta %s\n' "$PORT"; else printf 'INATIVO\n'; fi
-  printf 'HTTP PID: %s\n' "$(cat "$HTTP_PIDFILE" 2>/dev/null || printf '-')"
-  printf 'Últimas mensagens:\n'; tail -n 10 "$LOGFILE" 2>/dev/null || printf 'Sem log.\n'
+  if pid_alive && listener_active; then
+    printf 'ATIVO porta %s\n' "$PORT"
+    printf 'PID: %s\n' "$(cat "$PIDFILE")"
+  else
+    printf '%s\n' 'INATIVO'
+    printf 'PID: %s\n' "$(cat "$PIDFILE" 2>/dev/null || printf '-')"
+  fi
+  printf '%s\n' 'Últimas mensagens:'
+  tail -n 15 "$LOGFILE" 2>/dev/null || printf '%s\n' 'sem log'
 }
 
 case "${1:-menu}" in
   --start|start) start ;;
-  --stop|stop) stop; printf 'Painel parado.\n' ;;
+  --stop|stop) stop ;;
   --status|status) status ;;
   --boot) start >/dev/null 2>&1 || true ;;
-  *) clear; printf 'ORBIS WEB\n─────────────────────────────────────────────\n1 Iniciar  2 Parar  3 Status/diagnóstico  0 Voltar\n web › '; read -r c; case "$c" in 1) start;;2) stop; printf 'Painel parado.\n';;3) status;;esac; printf '\nEnter...'; read -r _ || true ;;
+  *)
+    clear
+    printf 'ORBIS CORE / WEB\n─────────────────────────────────────────────\n1 Iniciar  2 Parar  3 Status/diagnóstico  0 Voltar\n web › '
+    read -r c
+    case "$c" in 1) start ;; 2) stop ;; 3) status ;; esac
+    printf '\nEnter...'; read -r _ || true
+    ;;
 esac
