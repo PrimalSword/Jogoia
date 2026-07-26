@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.3"
+VERSION="0.2.4"
 ALPINE_VERSION="3.24.1"
 ARCH="x86_64"
 FLAVOR="extended"
@@ -23,7 +23,7 @@ for command in curl xorriso tar sha256sum install; do
   }
 done
 
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login; do
   [ -f "$CORE_DIR/$file" ] || {
     echo "Arquivo ausente: $CORE_DIR/$file" >&2
     exit 1
@@ -34,7 +34,6 @@ rm -rf "$WORKDIR"
 mkdir -p \
   "$WORKDIR/overlay/etc/apk" \
   "$WORKDIR/overlay/etc/network" \
-  "$WORKDIR/overlay/etc/local.d" \
   "$WORKDIR/overlay/root" \
   "$WORKDIR/overlay/usr/local/bin" \
   "$WORKDIR/overlay/var/log" \
@@ -46,7 +45,6 @@ curl --fail --location --retry 3 --output "$BASE_ISO" \
   "$BASE_URL/alpine-${FLAVOR}-${ALPINE_VERSION}-${ARCH}.iso"
 curl --fail --location --retry 3 --output "$BASE_SHA" \
   "$BASE_URL/alpine-${FLAVOR}-${ALPINE_VERSION}-${ARCH}.iso.sha256"
-
 (
   cd "$WORKDIR"
   sha256sum --check "$(basename "$BASE_SHA")"
@@ -127,19 +125,9 @@ alias status-orbis='orbis --status'
 alias log-orbis='orbis-log'
 EOF
 
-cat > "$WORKDIR/overlay/usr/local/bin/orbis-login" <<'EOF'
-#!/bin/sh
-hostname orbis 2>/dev/null || true
-mkdir -p /var/log
-printf '%s OrbisOS iniciou em %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf boot)" "$(uname -r)" >> /var/log/orbis.log
-/usr/local/bin/orbis --status
-exec /bin/ash -l
-EOF
-
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login; do
   install -m 0755 "$CORE_DIR/$file" "$WORKDIR/overlay/usr/local/bin/$file"
 done
-chmod +x "$WORKDIR/overlay/usr/local/bin/orbis-login"
 
 tar --numeric-owner --owner=0 --group=0 -C "$WORKDIR/overlay" -czf "$APKOVL" .
 
