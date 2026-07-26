@@ -27,6 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-rr", type=float, default=1.5)
     parser.add_argument("--cooldown-bars", type=int, default=3,
                         help="candles mínimos antes de aceitar sinal igual")
+    parser.add_argument("--max-bars", type=int, default=60,
+                        help="validade máxima da operação antes do fechamento por tempo")
     parser.add_argument(
         "--intrabar-policy",
         choices=("stop_first", "target_first"),
@@ -47,6 +49,8 @@ def main() -> None:
         raise SystemExit("--cooldown-bars não pode ser negativo")
     if args.slippage < 0:
         raise SystemExit("--slippage não pode ser negativo")
+    if args.max_bars < 1:
+        raise SystemExit("--max-bars deve ser pelo menos 1")
 
     provider = CsvReplayProvider(
         csv_path=args.csv,
@@ -58,7 +62,7 @@ def main() -> None:
     store = None if args.dry_run else SignalStore(args.database)
     pending: list[dict] = []
     last_signal_bar: dict[tuple[str, int, str], int] = {}
-    snapshots = generated = suppressed = closed = wins = losses = breakeven = ambiguous = 0
+    snapshots = generated = suppressed = closed = wins = losses = breakeven = ambiguous = timed_out = 0
     gross_total = cost_total = net_total = 0.0
     next_dry_id = 1
 
@@ -74,6 +78,8 @@ def main() -> None:
                 intrabar_policy=args.intrabar_policy,
                 spread_pips=float(item["spread_pips"]),
                 slippage_pips_per_side=args.slippage,
+                bars_already_held=item["bars"],
+                max_bars_held=args.max_bars,
             )
             if evaluation is None:
                 item["bars"] += 1
@@ -85,15 +91,16 @@ def main() -> None:
             losses += evaluation.outcome == "LOSS"
             breakeven += evaluation.outcome == "BREAKEVEN"
             ambiguous += evaluation.ambiguous
+            timed_out += evaluation.exit_reason == "TIMEOUT"
             gross_total += evaluation.gross_pips
             cost_total += evaluation.transaction_cost_pips
             net_total += evaluation.result_pips
             if store is not None:
                 store.close_signal(item["id"], evaluation)
             print(
-                f"FECHOU #{item['id']} {evaluation.outcome} "
+                f"FECHOU #{item['id']} {evaluation.outcome} motivo={evaluation.exit_reason} "
                 f"bruto={evaluation.gross_pips:+.2f} custo={evaluation.transaction_cost_pips:.2f} "
-                f"líquido={evaluation.result_pips:+.2f} pips em {item['bars'] + 1} candle(s)"
+                f"líquido={evaluation.result_pips:+.2f} pips em {evaluation.bars_held} candle(s)"
                 + (" [AMBÍGUO]" if evaluation.ambiguous else "")
             )
         pending = still_open
@@ -141,7 +148,7 @@ def main() -> None:
         print(
             f"ABRIU #{signal_id} {data['symbol']} M{data['timeframe_minutes']} "
             f"{data['side']} entrada={data['entry']} confiança={data['confidence']}% "
-            f"spread={snapshot.spread_pips:.2f}"
+            f"spread={snapshot.spread_pips:.2f} validade={args.max_bars} candles"
         )
 
     print(
@@ -151,7 +158,8 @@ def main() -> None:
     if closed:
         print(
             f"Resultados: {wins} wins, {losses} losses, {breakeven} breakeven, "
-            f"taxa de acerto={(wins / closed) * 100:.2f}%, ambíguos={ambiguous}."
+            f"taxa de acerto={(wins / closed) * 100:.2f}%, ambíguos={ambiguous}, "
+            f"encerrados por tempo={timed_out}."
         )
         print(
             f"Pips: bruto={gross_total:+.2f}, custos={cost_total:.2f}, líquido={net_total:+.2f}."
