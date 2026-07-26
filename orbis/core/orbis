@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="0.2.2"
+DEFAULT_VERSION="0.2.3"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 
@@ -45,7 +45,7 @@ while :; do
   printf '%s\n' '6 - Reiniciar'
   printf '%s\n' '7 - Desligar'
   printf '%s\n' '0 - Voltar ao terminal'
-  printf '%s'   'Escolha: '
+  printf '%s' 'Escolha: '
   read -r choice
 
   case "$choice" in
