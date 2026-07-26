@@ -1,6 +1,15 @@
 #!/bin/sh
 
-VERSION="0.2.1"
+DEFAULT_VERSION="0.2.2"
+VERSION="$DEFAULT_VERSION"
+COMMIT="embutido-na-ISO"
+
+if [ -f /etc/orbis-release ]; then
+  . /etc/orbis-release
+  VERSION="${ORBIS_VERSION:-$DEFAULT_VERSION}"
+  COMMIT="${ORBIS_COMMIT:-desconhecido}"
+fi
+SHORT_COMMIT="$(printf '%s' "$COMMIT" | cut -c1-8)"
 
 show_status() {
   MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"
@@ -19,6 +28,7 @@ show_status() {
   printf 'Memória....... %s MB\n' "$MEM_MB"
   printf 'Rede.......... %s\n' "$IP"
   printf 'Hostname...... %s\n' "$(hostname 2>/dev/null || printf orbis)"
+  printf 'Commit........ %s\n' "$SHORT_COMMIT"
   printf 'Terminal...... pronto\n'
   printf '%s\n\n' '============================================='
 }
@@ -29,7 +39,7 @@ show_status
 while :; do
   printf '%s\n' '1 - Configurar Wi-Fi'
   printf '%s\n' '2 - Instalar no cartão/disco'
-  printf '%s\n' '3 - Atualizar Orbis'
+  printf '%s\n' '3 - Atualizar pelo Git'
   printf '%s\n' '4 - Ver logs / rolar histórico'
   printf '%s\n' '5 - Atualizar status'
   printf '%s\n' '6 - Reiniciar'
