@@ -7,27 +7,79 @@ CHECKOUT="/opt/orbis-src"
 CORE="$CHECKOUT/orbis/core"
 RELEASE_FILE="/etc/orbis-release"
 LOGFILE="/var/log/orbis.log"
-VERSION="0.3.1"
+BACKUP_DIR="/opt/orbis-backup"
+VERSION="0.4.0"
+FILES="orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tetris orbis-doctor orbis-keyboard"
 
-mkdir -p /opt /var/log /usr/local/bin
+mkdir -p /opt /var/log /usr/local/bin "$BACKUP_DIR"
+mount -o remount,rw / 2>/dev/null || true
+
 log() {
-  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE"
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true
 }
 
-printf '%s\n' 'ORBIS OS - ATUALIZAÇÃO PELO GIT'
-printf '%s\n' '============================================='
+repair_apk() {
+  mkdir -p /etc/apk
+  [ -f /etc/apk/repositories ] || : > /etc/apk/repositories
 
-command -v git >/dev/null 2>&1 || {
-  printf '%s\n' 'Git não está instalado. Tentando instalar...'
+  if ! grep -Eq '^[^#].*/v3\.24/main' /etc/apk/repositories 2>/dev/null; then
+    printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> /etc/apk/repositories
+  fi
+  if ! grep -Eq '^[^#].*/v3\.24/community' /etc/apk/repositories 2>/dev/null; then
+    printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> /etc/apk/repositories
+  fi
+
+  if [ -f /etc/apk/world ]; then
+    sed -i '/^linux-firmware-iwlwifi$/d;/^linux-firmware-rtlwifi$/d' /etc/apk/world 2>/dev/null || true
+  fi
+
   apk update
+}
+
+ensure_git() {
+  if command -v git >/dev/null 2>&1; then return 0; fi
+  printf '%s\n' 'Git não está instalado. Corrigindo repositórios e instalando...'
+  repair_apk
   apk add --force-broken-world git ca-certificates
   update-ca-certificates 2>/dev/null || true
+  command -v git >/dev/null 2>&1 || { printf '%s\n' 'Falha ao instalar o Git.'; exit 1; }
 }
 
-ping -c 1 github.com >/dev/null 2>&1 || {
+backup_current() {
+  rm -rf "$BACKUP_DIR/current"
+  mkdir -p "$BACKUP_DIR/current/bin"
+  for file in $FILES; do
+    [ -f "/usr/local/bin/$file" ] && cp -p "/usr/local/bin/$file" "$BACKUP_DIR/current/bin/$file"
+  done
+  [ -f "$RELEASE_FILE" ] && cp -p "$RELEASE_FILE" "$BACKUP_DIR/current/orbis-release"
+}
+
+restore_backup() {
+  printf '%s\n' 'Falha detectada. Restaurando versão anterior...'
+  if [ -d "$BACKUP_DIR/current/bin" ]; then
+    for file in "$BACKUP_DIR/current/bin"/*; do
+      [ -f "$file" ] || continue
+      install -m 0755 "$file" "/usr/local/bin/${file##*/}"
+    done
+  fi
+  [ -f "$BACKUP_DIR/current/orbis-release" ] && cp "$BACKUP_DIR/current/orbis-release" "$RELEASE_FILE"
+  sync
+  log 'Atualização falhou; backup restaurado.'
+}
+
+trap 'restore_backup' INT TERM HUP
+
+printf '%s\n' 'ORBIS OS - ATUALIZAÇÃO SEGURA'
+printf '%s\n' '============================================='
+
+ensure_git
+
+ping -c 1 -W 5 github.com >/dev/null 2>&1 || {
   printf '%s\n' 'Sem acesso ao GitHub. Confira o Wi-Fi.'
   exit 1
 }
+
+backup_current
 
 if [ -d "$CHECKOUT/.git" ]; then
   printf '%s\n' 'Atualizando repositório existente...'
@@ -39,11 +91,18 @@ else
   git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
 fi
 
-[ -d "$CORE" ] || { printf '%s\n' 'Estrutura orbis/core não encontrada.'; exit 1; }
+[ -d "$CORE" ] || { restore_backup; printf '%s\n' 'Estrutura orbis/core não encontrada.'; exit 1; }
 
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tetris; do
-  [ -f "$CORE/$file" ] || { printf 'Arquivo ausente: %s\n' "$file"; exit 1; }
+for file in $FILES; do
+  [ -f "$CORE/$file" ] || { restore_backup; printf 'Arquivo ausente: %s\n' "$file"; exit 1; }
+done
+
+for file in $FILES; do
   install -m 0755 "$CORE/$file" "/usr/local/bin/$file"
+done
+
+for file in $FILES; do
+  [ -x "/usr/local/bin/$file" ] || { restore_backup; printf 'Falha ao validar: %s\n' "$file"; exit 1; }
 done
 
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
@@ -56,8 +115,10 @@ ORBIS_REPOSITORY=$REPO_URL
 UPDATED_AT=$(date -Iseconds 2>/dev/null || date)
 EOF
 
-log "Orbis atualizado pelo Git para $COMMIT"
+sync
+trap - INT TERM HUP
+log "Orbis atualizado com segurança para $COMMIT"
 printf '\nOrbis atualizado com sucesso.\n'
 printf 'Versão instalada: %s\n' "$VERSION"
 printf 'Commit instalado: %s\n' "$SHORT"
-printf '%s\n' 'Wi-Fi, reconexão automática, logs e Tetris foram validados.'
+printf '%s\n' 'Backup da versão anterior mantido em /opt/orbis-backup/current.'
