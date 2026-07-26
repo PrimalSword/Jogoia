@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="0.2.5"
+DEFAULT_VERSION="0.3.0"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -106,25 +106,27 @@ show_status
 [ "${1:-}" = "--status" ] && exit 0
 
 while :; do
-  printf '%s\n' '1 - Configurar Wi-Fi'
-  printf '%s\n' '2 - Instalar no cartão/disco'
-  printf '%s\n' '3 - Atualizar pelo Git'
-  printf '%s\n' '4 - Ver logs / rolar histórico'
-  printf '%s\n' '5 - Atualizar status'
-  printf '%s\n' '6 - Reiniciar'
-  printf '%s\n' '7 - Desligar'
+  printf '%s\n' '1 - Jogar Tetris'
+  printf '%s\n' '2 - Configurar Wi-Fi'
+  printf '%s\n' '3 - Instalar no cartão/disco'
+  printf '%s\n' '4 - Atualizar pelo Git'
+  printf '%s\n' '5 - Ver logs / rolar histórico'
+  printf '%s\n' '6 - Atualizar status'
+  printf '%s\n' '7 - Reiniciar'
+  printf '%s\n' '8 - Desligar'
   printf '%s\n' '0 - Voltar ao terminal'
   printf '%s' 'Escolha: '
   read -r choice
 
   case "$choice" in
-    1) run_orbis_command orbis-wifi; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    2) run_orbis_command orbis-install; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    3) run_orbis_command orbis-update; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    4) run_orbis_command orbis-log; show_status ;;
-    5) show_status ;;
-    6) reboot ;;
-    7) poweroff ;;
+    1) run_orbis_command orbis-tetris; show_status ;;
+    2) run_orbis_command orbis-wifi; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
+    3) run_orbis_command orbis-install; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
+    4) run_orbis_command orbis-update; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
+    5) run_orbis_command orbis-log; show_status ;;
+    6) show_status ;;
+    7) reboot ;;
+    8) poweroff ;;
     0) exit 0 ;;
     *) printf 'Opção inválida.\n' ;;
   esac
