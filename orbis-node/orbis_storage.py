@@ -45,7 +45,8 @@ class SignalStore:
                     result_pips REAL,
                     outcome TEXT CHECK (outcome IN ('WIN', 'LOSS', 'BREAKEVEN') OR outcome IS NULL),
                     bars_held INTEGER,
-                    ambiguous INTEGER NOT NULL DEFAULT 0
+                    ambiguous INTEGER NOT NULL DEFAULT 0,
+                    exit_reason TEXT
                 )
                 """
             )
@@ -54,6 +55,8 @@ class SignalStore:
                 connection.execute("ALTER TABLE signals ADD COLUMN bars_held INTEGER")
             if "ambiguous" not in columns:
                 connection.execute("ALTER TABLE signals ADD COLUMN ambiguous INTEGER NOT NULL DEFAULT 0")
+            if "exit_reason" not in columns:
+                connection.execute("ALTER TABLE signals ADD COLUMN exit_reason TEXT")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC)"
             )
@@ -90,13 +93,13 @@ class SignalStore:
                 """
                 UPDATE signals
                 SET status='CLOSED', outcome=?, exit_price=?, closed_at=?,
-                    result_pips=?, bars_held=?, ambiguous=?
+                    result_pips=?, bars_held=?, ambiguous=?, exit_reason=?
                 WHERE id=? AND status='OPEN'
                 """,
                 (
                     evaluation.outcome, evaluation.exit_price, evaluation.closed_at,
                     evaluation.result_pips, evaluation.bars_held,
-                    1 if evaluation.ambiguous else 0, int(signal_id),
+                    1 if evaluation.ambiguous else 0, evaluation.exit_reason, int(signal_id),
                 ),
             )
             if cursor.rowcount != 1:
@@ -120,6 +123,7 @@ class SignalStore:
                        SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) losses,
                        SUM(CASE WHEN outcome='BREAKEVEN' THEN 1 ELSE 0 END) breakeven,
                        SUM(CASE WHEN ambiguous=1 THEN 1 ELSE 0 END) ambiguous,
+                       SUM(CASE WHEN exit_reason='TIMEOUT' THEN 1 ELSE 0 END) timed_out,
                        COALESCE(SUM(result_pips), 0) net_pips,
                        AVG(CASE WHEN status='CLOSED' THEN bars_held END) avg_bars
                 FROM signals
@@ -137,6 +141,7 @@ class SignalStore:
             "losses": losses,
             "breakeven": breakeven,
             "ambiguous": int(aggregate["ambiguous"] or 0),
+            "timed_out": int(aggregate["timed_out"] or 0),
             "win_rate": round((wins / closed) * 100, 2) if closed else None,
             "net_pips": round(float(aggregate["net_pips"] or 0), 2),
             "average_bars_held": round(float(aggregate["avg_bars"]), 2) if aggregate["avg_bars"] is not None else None,
