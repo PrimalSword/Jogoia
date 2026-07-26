@@ -1,148 +1,53 @@
 #!/bin/sh
 set -eu
 
-FILES="orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tetris orbis-doctor orbis-keyboard orbis-time"
 WORLD="/etc/apk/world"
 REPOS="/etc/apk/repositories"
+CORE_SOURCE="/opt/orbis-src/orbis/core"
 
-printf '%s\n' 'ORBIS OS  •  INSTALAÇÃO'
-printf '%s\n' '─────────────────────────────────────────────'
+printf '%s\n' 'ORBIS OS  •  INSTALAÇÃO' '─────────────────────────────────────────────'
 printf '%s\n' 'O dispositivo escolhido será APAGADO por completo.'
 printf '\nDispositivos detectados:\n\n'
-
-if command -v lsblk >/dev/null 2>&1; then
-  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL
-else
-  fdisk -l 2>/dev/null || cat /proc/partitions
-fi
-
+if command -v lsblk >/dev/null 2>&1; then lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL; else fdisk -l 2>/dev/null || cat /proc/partitions; fi
 printf '\nDigite o dispositivo inteiro de destino (ex.: /dev/mmcblk0 ou /dev/sdc): '
 read -r TARGET
-case "$TARGET" in
-  /dev/sd[a-z]|/dev/mmcblk[0-9]|/dev/nvme[0-9]n[0-9]) ;;
-  *) printf '%s\n' 'Destino inválido. Operação cancelada.'; exit 1 ;;
-esac
+case "$TARGET" in /dev/sd[a-z]|/dev/mmcblk[0-9]|/dev/nvme[0-9]n[0-9]) ;; *) printf '%s\n' 'Destino inválido. Operação cancelada.'; exit 1 ;; esac
 [ -b "$TARGET" ] || { printf '%s\n' 'Esse dispositivo não existe.'; exit 1; }
-
 ROOT_SOURCE="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
-ROOT_PARENT=""
-if [ -n "$ROOT_SOURCE" ] && command -v lsblk >/dev/null 2>&1; then
-  ROOT_PARENT="$(lsblk -ndo PKNAME "$ROOT_SOURCE" 2>/dev/null | head -n1)"
-fi
+ROOT_PARENT=""; [ -n "$ROOT_SOURCE" ] && command -v lsblk >/dev/null 2>&1 && ROOT_PARENT="$(lsblk -ndo PKNAME "$ROOT_SOURCE" 2>/dev/null | head -n1)"
 [ -n "$ROOT_PARENT" ] && ACTIVE_DISK="/dev/$ROOT_PARENT" || ACTIVE_DISK="$ROOT_SOURCE"
-
-if [ -n "$ACTIVE_DISK" ] && [ "$TARGET" = "$ACTIVE_DISK" ]; then
-  printf '\n%s\n' 'INSTALAÇÃO BLOQUEADA'
-  printf '%s\n' '─────────────────────────────────────────────'
-  printf 'O Orbis já está executando neste dispositivo: %s\n' "$TARGET"
-  printf '%s\n' 'Não é necessário reinstalar após uma atualização.'
-  printf '%s\n' 'Use apenas “Atualizar pelo Git”; as mudanças ficam salvas no SD.'
-  exit 1
-fi
-
-BOOTDEV="$(findmnt -n -o SOURCE /media/usb 2>/dev/null || true)"
-case "$BOOTDEV" in
-  "$TARGET"*) printf '%s\n' 'Você escolheu o pendrive que iniciou o OrbisOS. Operação bloqueada.'; exit 1 ;;
-esac
-
-command -v setup-disk >/dev/null 2>&1 || {
-  printf '%s\n' 'setup-disk não está disponível nesta imagem.'
-  exit 1
-}
-
-printf '%s\n' 'Preparando e validando o sistema de pacotes...'
-
-if [ -f "$WORLD" ]; then
-  cp "$WORLD" /tmp/orbis-world.before
-  awk '
-    {
-      line=$0
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-      if (line == "linux-firmware-iwlwifi") next
-      if (line == "linux-firmware-rtlwifi") next
-      print $0
-    }
-  ' "$WORLD" > /tmp/orbis-world.clean
-  cat /tmp/orbis-world.clean > "$WORLD"
-fi
-
-if grep -Eq '^[[:space:]]*linux-firmware-(iwlwifi|rtlwifi)[[:space:]]*$' "$WORLD" 2>/dev/null; then
-  printf '%s\n' 'Falha: dependências incompatíveis ainda permanecem em /etc/apk/world.'
-  printf '%s\n' 'O cartão NÃO foi apagado. Instalação cancelada com segurança.'
-  exit 1
-fi
+[ -n "$ACTIVE_DISK" ] && [ "$TARGET" = "$ACTIVE_DISK" ] && { printf '%s\n' 'Instalação bloqueada: o Orbis já executa neste dispositivo.'; exit 1; }
+BOOTDEV="$(findmnt -n -o SOURCE /media/usb 2>/dev/null || true)"; case "$BOOTDEV" in "$TARGET"*) printf '%s\n' 'Você escolheu o dispositivo de inicialização. Operação bloqueada.'; exit 1 ;; esac
+command -v setup-disk >/dev/null 2>&1 || { printf '%s\n' 'setup-disk não está disponível nesta imagem.'; exit 1; }
 
 mkdir -p /etc/apk
 [ -f "$REPOS" ] || : > "$REPOS"
-if ! grep -Eq '^[^#].*/v3\.24/main([[:space:]]*)$' "$REPOS" 2>/dev/null; then
-  printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> "$REPOS"
-fi
-if ! grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' "$REPOS" 2>/dev/null; then
-  printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> "$REPOS"
-fi
-
+grep -Eq '^[^#].*/v3\.24/main([[:space:]]*)$' "$REPOS" 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> "$REPOS"
+grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' "$REPOS" 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> "$REPOS"
 apk update
-apk add --force-broken-world git ca-certificates
-apk fix --simulate >/tmp/orbis-apk-simulate.log 2>&1 || {
-  printf '%s\n' 'A validação dos pacotes falhou. O cartão NÃO foi apagado.'
-  cat /tmp/orbis-apk-simulate.log
-  exit 1
-}
+apk add --force-broken-world git ca-certificates python3
+python3 -m py_compile "$CORE_SOURCE/orbis_core.py" || { printf '%s\n' 'Núcleo Python inválido. Instalação cancelada.'; exit 1; }
 
-printf '\nVocê escolheu: %s\n' "$TARGET"
-printf '%s\n' 'Tudo nele será apagado.'
+printf '\nVocê escolheu: %s\nTudo nele será apagado.\n' "$TARGET"
 printf '%s' 'Para confirmar, digite exatamente INSTALAR: '
 read -r CONFIRM
 [ "$CONFIRM" = "INSTALAR" ] || { printf '%s\n' 'Cancelado.'; exit 1; }
-
-printf '\nIniciando instalação em modo system...\n'
 BOOTLOADER=syslinux setup-disk -m sys "$TARGET"
-
-printf '\nAplicando componentes persistentes do Orbis...\n'
-ROOTPART="$(lsblk -lnpo NAME,FSTYPE "$TARGET" 2>/dev/null | awk '$2 == "ext4" {print $1}' | tail -n 1)"
+ROOTPART="$(lsblk -lnpo NAME,FSTYPE "$TARGET" 2>/dev/null | awk '$2 == "ext4" {print $1}' | tail -n1)"
 [ -n "$ROOTPART" ] || { printf '%s\n' 'Não foi possível localizar a partição raiz instalada.'; exit 1; }
-
 MOUNTPOINT="/mnt/orbis-target"
-mkdir -p "$MOUNTPOINT"
-mount "$ROOTPART" "$MOUNTPOINT"
+mkdir -p "$MOUNTPOINT"; mount "$ROOTPART" "$MOUNTPOINT"
 trap 'umount "$MOUNTPOINT" 2>/dev/null || true' EXIT
-mkdir -p "$MOUNTPOINT/usr/local/bin" "$MOUNTPOINT/etc" "$MOUNTPOINT/opt"
-
-for file in $FILES; do
-  if [ -f "/usr/local/bin/$file" ]; then
-    install -m 0755 "/usr/local/bin/$file" "$MOUNTPOINT/usr/local/bin/$file"
-  elif [ -f "/opt/orbis-src/orbis/core/$file" ]; then
-    install -m 0755 "/opt/orbis-src/orbis/core/$file" "$MOUNTPOINT/usr/local/bin/$file"
-  else
-    printf 'Arquivo obrigatório ausente: %s\n' "$file"
-    exit 1
-  fi
+mkdir -p "$MOUNTPOINT/usr/local/bin" "$MOUNTPOINT/usr/local/lib/orbis" "$MOUNTPOINT/etc" "$MOUNTPOINT/opt"
+for file in "$CORE_SOURCE"/orbis*; do
+  [ -f "$file" ] || continue
+  case "${file##*/}" in orbis_core.py) install -m 0644 "$file" "$MOUNTPOINT/usr/local/lib/orbis/orbis_core.py" ;; *) install -m 0755 "$file" "$MOUNTPOINT/usr/local/bin/${file##*/}" ;; esac
 done
-
-for file in inittab orbis-release hostname hosts orbis-keyboard; do
-  [ -f "/etc/$file" ] && cp "/etc/$file" "$MOUNTPOINT/etc/$file"
-done
+[ -s "$MOUNTPOINT/usr/local/lib/orbis/orbis_core.py" ] || { printf '%s\n' 'Falha ao persistir o núcleo Python.'; exit 1; }
+for file in inittab orbis-release hostname hosts orbis-keyboard; do [ -f "/etc/$file" ] && cp "/etc/$file" "$MOUNTPOINT/etc/$file"; done
 [ -f "$REPOS" ] && { mkdir -p "$MOUNTPOINT/etc/apk"; cp "$REPOS" "$MOUNTPOINT/etc/apk/repositories"; }
 [ -f "$WORLD" ] && { mkdir -p "$MOUNTPOINT/etc/apk"; cp "$WORLD" "$MOUNTPOINT/etc/apk/world"; }
-
-if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-  mkdir -p "$MOUNTPOINT/etc/wpa_supplicant"
-  cp /etc/wpa_supplicant/wpa_supplicant.conf "$MOUNTPOINT/etc/wpa_supplicant/wpa_supplicant.conf"
-  chmod 600 "$MOUNTPOINT/etc/wpa_supplicant/wpa_supplicant.conf"
-fi
-
-if [ -d /opt/orbis-src/.git ]; then
-  rm -rf "$MOUNTPOINT/opt/orbis-src"
-  cp -a /opt/orbis-src "$MOUNTPOINT/opt/orbis-src"
-fi
-
-sync
-umount "$MOUNTPOINT"
-trap - EXIT
-
-printf '\nValidação final:\n'
-for file in $FILES; do
-  [ -x "/usr/local/bin/$file" ] && printf '✓ %s\n' "$file"
-done
-printf '\nInstalação concluída.\n'
-printf '%s\n' 'Desligue, remova o pendrive e ligue novamente pelo cartão/disco.'
+if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then mkdir -p "$MOUNTPOINT/etc/wpa_supplicant"; cp /etc/wpa_supplicant/wpa_supplicant.conf "$MOUNTPOINT/etc/wpa_supplicant/wpa_supplicant.conf"; chmod 600 "$MOUNTPOINT/etc/wpa_supplicant/wpa_supplicant.conf"; fi
+if [ -d /opt/orbis-src/.git ]; then rm -rf "$MOUNTPOINT/opt/orbis-src"; cp -a /opt/orbis-src "$MOUNTPOINT/opt/orbis-src"; fi
+sync; umount "$MOUNTPOINT"; trap - EXIT
+printf '\nInstalação concluída e validada.\nDesligue, remova o pendrive e ligue novamente pelo cartão/disco.\n'
