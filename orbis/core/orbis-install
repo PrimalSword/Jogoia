@@ -5,9 +5,9 @@ FILES="orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-t
 WORLD="/etc/apk/world"
 REPOS="/etc/apk/repositories"
 
-printf '%s\n' 'ORBIS OS - INSTALAÇÃO NO CARTÃO/DISCO'
-printf '%s\n' '============================================='
-printf '%s\n' 'ATENÇÃO: o dispositivo escolhido será APAGADO por completo.'
+printf '%s\n' 'ORBIS OS  •  INSTALAÇÃO'
+printf '%s\n' '─────────────────────────────────────────────'
+printf '%s\n' 'O dispositivo escolhido será APAGADO por completo.'
 printf '\nDispositivos detectados:\n\n'
 
 if command -v lsblk >/dev/null 2>&1; then
@@ -24,6 +24,22 @@ case "$TARGET" in
 esac
 [ -b "$TARGET" ] || { printf '%s\n' 'Esse dispositivo não existe.'; exit 1; }
 
+ROOT_SOURCE="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+ROOT_PARENT=""
+if [ -n "$ROOT_SOURCE" ] && command -v lsblk >/dev/null 2>&1; then
+  ROOT_PARENT="$(lsblk -ndo PKNAME "$ROOT_SOURCE" 2>/dev/null | head -n1)"
+fi
+[ -n "$ROOT_PARENT" ] && ACTIVE_DISK="/dev/$ROOT_PARENT" || ACTIVE_DISK="$ROOT_SOURCE"
+
+if [ -n "$ACTIVE_DISK" ] && [ "$TARGET" = "$ACTIVE_DISK" ]; then
+  printf '\n%s\n' 'INSTALAÇÃO BLOQUEADA'
+  printf '%s\n' '─────────────────────────────────────────────'
+  printf 'O Orbis já está executando neste dispositivo: %s\n' "$TARGET"
+  printf '%s\n' 'Não é necessário reinstalar após uma atualização.'
+  printf '%s\n' 'Use apenas “Atualizar pelo Git”; as mudanças ficam salvas no SD.'
+  exit 1
+fi
+
 BOOTDEV="$(findmnt -n -o SOURCE /media/usb 2>/dev/null || true)"
 case "$BOOTDEV" in
   "$TARGET"*) printf '%s\n' 'Você escolheu o pendrive que iniciou o OrbisOS. Operação bloqueada.'; exit 1 ;;
@@ -34,7 +50,7 @@ command -v setup-disk >/dev/null 2>&1 || {
   exit 1
 }
 
-printf '%s\n' 'Preparando o sistema de pacotes antes de apagar o destino...'
+printf '%s\n' 'Preparando e validando o sistema de pacotes...'
 
 if [ -f "$WORLD" ]; then
   cp "$WORLD" /tmp/orbis-world.before
@@ -65,11 +81,8 @@ if ! grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' "$REPOS" 2>/dev/null; th
   printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> "$REPOS"
 fi
 
-printf '\nAtualizando índices e validando dependências...\n'
 apk update
 apk add --force-broken-world git ca-certificates
-
-# Verifica o conjunto de pacotes antes de qualquer alteração destrutiva no cartão.
 apk fix --simulate >/tmp/orbis-apk-simulate.log 2>&1 || {
   printf '%s\n' 'A validação dos pacotes falhou. O cartão NÃO foi apagado.'
   cat /tmp/orbis-apk-simulate.log
