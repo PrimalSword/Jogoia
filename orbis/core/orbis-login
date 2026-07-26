@@ -1,8 +1,61 @@
 #!/bin/sh
+
 hostname orbis 2>/dev/null || true
 mkdir -p /var/log
-printf '%s OrbisOS iniciou em %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf boot)" "$(uname -r)" >> /var/log/orbis.log
+
+# A instalação em ext4 pode iniciar a raiz como somente leitura.
+# Libera escrita para logs, rede e futuras atualizações.
+mount -o remount,rw / 2>/dev/null || true
+
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf boot)" "$*" >> /var/log/orbis.log 2>/dev/null || true
+}
+
+auto_connect_wifi() {
+  CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
+  [ -s "$CONF" ] || return 0
+
+  WIFI_IFACE=""
+  for path in /sys/class/net/*; do
+    [ -e "$path" ] || continue
+    iface="${path##*/}"
+    case "$iface" in
+      wlan*|wlp*) WIFI_IFACE="$iface"; break ;;
+    esac
+  done
+
+  [ -n "$WIFI_IFACE" ] || { log 'Wi-Fi automático: interface não encontrada.'; return 0; }
+
+  command -v modprobe >/dev/null 2>&1 && modprobe ath9k 2>/dev/null || true
+  command -v rfkill >/dev/null 2>&1 && rfkill unblock all 2>/dev/null || true
+  ifconfig "$WIFI_IFACE" up 2>/dev/null || ip link set "$WIFI_IFACE" up 2>/dev/null || true
+
+  if ! iw dev "$WIFI_IFACE" link 2>/dev/null | grep -q '^Connected to '; then
+    killall wpa_supplicant 2>/dev/null || true
+    wpa_supplicant -B -i "$WIFI_IFACE" -c "$CONF" >/dev/null 2>&1 || {
+      log "Wi-Fi automático: falha ao iniciar wpa_supplicant em $WIFI_IFACE."
+      return 0
+    }
+    sleep 3
+  fi
+
+  if ! ip -4 -o addr show dev "$WIFI_IFACE" scope global 2>/dev/null | grep -q 'inet '; then
+    udhcpc -i "$WIFI_IFACE" -q -t 5 -T 2 >/dev/null 2>&1 || true
+  fi
+
+  IP="$(ip -4 -o addr show dev "$WIFI_IFACE" scope global 2>/dev/null | awk '{print $4}' | head -n1)"
+  if [ -n "$IP" ]; then
+    log "Wi-Fi automático conectado: interface=$WIFI_IFACE ip=$IP"
+  else
+    log "Wi-Fi automático sem IP: interface=$WIFI_IFACE"
+  fi
+}
+
+log "OrbisOS iniciou em $(uname -r)"
+auto_connect_wifi
+
 if [ -x /usr/local/bin/orbis ]; then
   /usr/local/bin/orbis
 fi
+
 exec /bin/ash -l
