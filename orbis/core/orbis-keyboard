@@ -1,0 +1,52 @@
+#!/bin/sh
+set -u
+
+CONF="/etc/orbis-keyboard"
+KEYMAP_DIR="/usr/share/bkeymaps"
+
+apply_layout() {
+  layout="$1"
+  case "$layout" in
+    br-abnt2)
+      candidate="$(find "$KEYMAP_DIR" -type f \( -name 'br-abnt2.bmap.gz' -o -name 'br-abnt2.bmap' -o -name 'br*.bmap.gz' \) 2>/dev/null | head -n1)"
+      ;;
+    us)
+      candidate="$(find "$KEYMAP_DIR" -type f \( -name 'us.bmap.gz' -o -name 'us.bmap' \) 2>/dev/null | head -n1)"
+      ;;
+    *) return 1 ;;
+  esac
+
+  if [ -n "$candidate" ] && command -v loadkmap >/dev/null 2>&1; then
+    case "$candidate" in
+      *.gz) gzip -dc "$candidate" | loadkmap ;;
+      *) loadkmap < "$candidate" ;;
+    esac
+  elif command -v setup-keymap >/dev/null 2>&1; then
+    case "$layout" in
+      br-abnt2) setup-keymap br br-abnt2 ;;
+      us) setup-keymap us us ;;
+    esac
+  else
+    printf '%s\n' 'Não foi possível aplicar o mapa de teclado nesta imagem.'
+    return 1
+  fi
+
+  printf 'ORBIS_KEYBOARD=%s\n' "$layout" > "$CONF"
+  chmod 644 "$CONF"
+  return 0
+}
+
+printf '%s\n' 'ORBIS OS - CONFIGURAÇÃO DO TECLADO'
+printf '%s\n' '============================================='
+printf '%s\n' '1 - Brasileiro ABNT2'
+printf '%s\n' '2 - Americano US'
+printf '%s\n' '0 - Cancelar'
+printf '%s' 'Escolha: '
+read -r choice || exit 0
+
+case "$choice" in
+  1) apply_layout br-abnt2 && printf '%s\n' 'Teclado ABNT2 configurado.' ;;
+  2) apply_layout us && printf '%s\n' 'Teclado US configurado.' ;;
+  0) exit 0 ;;
+  *) printf '%s\n' 'Opção inválida.'; exit 1 ;;
+esac
