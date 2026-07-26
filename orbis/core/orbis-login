@@ -11,11 +11,7 @@ apply_saved_keyboard() {
   case "$layout" in br-abnt2) candidate="$(find "$KEYMAP_DIR" -type f \( -name 'br-abnt2.bmap.gz' -o -name 'br-abnt2.bmap' -o -name 'br*.bmap.gz' \) 2>/dev/null | head -n1)" ;; us) candidate="$(find "$KEYMAP_DIR" -type f \( -name 'us.bmap.gz' -o -name 'us.bmap' \) 2>/dev/null | head -n1)" ;; *) return 0 ;; esac
   if [ -n "$candidate" ] && command -v loadkmap >/dev/null 2>&1; then case "$candidate" in *.gz) gzip -dc "$candidate" | loadkmap ;; *) loadkmap < "$candidate" ;; esac; log "Teclado aplicado: $layout"; fi
 }
-find_wifi_iface() {
-  WIFI_IFACE=""; count=0
-  while [ "$count" -lt 15 ]; do for path in /sys/class/net/*; do [ -e "$path" ] || continue; iface="${path##*/}"; case "$iface" in wlan*|wlp*) WIFI_IFACE="$iface"; return 0 ;; esac; done; count=$((count + 1)); sleep 1; done
-  return 1
-}
+find_wifi_iface() { WIFI_IFACE=""; count=0; while [ "$count" -lt 15 ]; do for path in /sys/class/net/*; do [ -e "$path" ] || continue; iface="${path##*/}"; case "$iface" in wlan*|wlp*) WIFI_IFACE="$iface"; return 0 ;; esac; done; count=$((count + 1)); sleep 1; done; return 1; }
 auto_connect_wifi() {
   CONF="/etc/wpa_supplicant/wpa_supplicant.conf"; [ -s "$CONF" ] || { log 'Wi-Fi automático: nenhuma configuração salva.'; return 0; }
   command -v modprobe >/dev/null 2>&1 && modprobe ath9k 2>/dev/null || true; command -v rfkill >/dev/null 2>&1 && rfkill unblock all 2>/dev/null || true
@@ -26,11 +22,13 @@ auto_connect_wifi() {
 }
 sync_clock() { [ -x /usr/local/bin/orbis-time ] && /usr/local/bin/orbis-time --quiet || true; }
 run_boot_automations() { [ -x /usr/local/bin/orbis-jobs ] && /usr/local/bin/orbis-jobs --boot >/dev/null 2>&1 || true; }
+start_web_dashboard() { [ -x /usr/local/bin/orbis-web ] && /usr/local/bin/orbis-web --boot >/dev/null 2>&1 || true; }
 
 log "OrbisOS iniciou em $(uname -r)"
 apply_saved_keyboard
 auto_connect_wifi
 sync_clock
 run_boot_automations
+start_web_dashboard
 if [ -x /usr/local/bin/orbis ]; then /usr/local/bin/orbis; fi
 exec /bin/ash -l
