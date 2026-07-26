@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="0.4.2"
+DEFAULT_VERSION="0.5.0"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -45,6 +45,35 @@ wifi_status() {
   [ -n "$SIGNAL" ] && WIFI_SIGNAL="$SIGNAL"
 }
 
+format_uptime() {
+  seconds="$(cut -d. -f1 /proc/uptime 2>/dev/null || printf 0)"
+  days=$((seconds / 86400))
+  hours=$(((seconds % 86400) / 3600))
+  minutes=$(((seconds % 3600) / 60))
+  if [ "$days" -gt 0 ]; then
+    printf '%sd %02sh %02sm' "$days" "$hours" "$minutes"
+  elif [ "$hours" -gt 0 ]; then
+    printf '%sh %02sm' "$hours" "$minutes"
+  else
+    printf '%sm' "$minutes"
+  fi
+}
+
+cpu_temperature() {
+  for zone in /sys/class/thermal/thermal_zone*/temp; do
+    [ -r "$zone" ] || continue
+    raw="$(cat "$zone" 2>/dev/null || true)"
+    case "$raw" in ''|*[!0-9]*) continue ;; esac
+    if [ "$raw" -ge 1000 ]; then printf '%s°C' "$((raw / 1000))"; else printf '%s°C' "$raw"; fi
+    return 0
+  done
+  printf '%s' 'indisponível'
+}
+
+storage_status() {
+  df -hP / 2>/dev/null | awk 'NR==2 {printf "%s usados de %s (%s)", $3, $2, $5; exit}'
+}
+
 show_status() {
   MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"
   CPU="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)"
@@ -52,17 +81,26 @@ show_status() {
   IP="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)"
   [ -n "$IP" ] || IP="desconectada"
   POWER="$(power_status)"
+  UPTIME="$(format_uptime)"
+  TEMP="$(cpu_temperature)"
+  STORAGE="$(storage_status)"
+  [ -n "$STORAGE" ] || STORAGE="indisponível"
+  LOAD="$(awk '{print $1}' /proc/loadavg 2>/dev/null || printf '?')"
   wifi_status
   clear
   printf '%s\n' '   ____  ____  ____  ___ ____'
   printf '%s\n' '  / __ \/ __ \/ __ )/  _/ __/'
-  printf '%s\n' ' / /_/ / /_/ / __  |/ /_\ \\  '
+  printf '%s\n' ' / /_/ / /_/ / __  |/ /_\ \  '
   printf '%s\n' ' \____/\____/_____/___/___/'
   printf '  ORBIS OS  %s  •  %s\n' "$VERSION" "$SHORT_COMMIT"
   printf '%s\n' '─────────────────────────────────────────────'
   printf ' SISTEMA   %s\n' 'ONLINE'
   printf ' CPU       %s\n' "$CPU"
   printf ' MEMÓRIA   %s MB\n' "$MEM_MB"
+  printf ' CARGA     %s\n' "$LOAD"
+  printf ' TEMP.     %s\n' "$TEMP"
+  printf ' UPTIME    %s\n' "$UPTIME"
+  printf ' DISCO     %s\n' "$STORAGE"
   printf ' ENERGIA   %s\n' "$POWER"
   printf ' WI-FI     %s  (%s)\n' "$WIFI_SSID" "$WIFI_SIGNAL"
   printf ' IP        %s\n' "$IP"
