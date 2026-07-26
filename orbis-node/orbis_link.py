@@ -15,13 +15,15 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
+from orbis_storage import SignalStore
 from orbis_trade import analyze, candles_from_rows
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
 STARTED_AT = time.time()
-SIGNALS: list[dict[str, Any]] = []
+STORE = SignalStore(ROOT / "data" / "orbis.db")
 
 
 def load_config() -> dict[str, Any]:
@@ -72,11 +74,12 @@ def node_status(config: dict[str, Any]) -> dict[str, Any]:
         "load_average": load_average,
         "memory": memory_status(),
         "trade_mode": config.get("trade", {}).get("mode", "paper"),
+        "trade_summary": STORE.summary(),
     }
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "OrbisLink/0.1"
+    server_version = "OrbisLink/0.2"
 
     @property
     def config(self) -> dict[str, Any]:
@@ -106,26 +109,36 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/health":
-            self.send_json(200, {"status": "ok", "service": "orbis-link"})
+        parsed = urlparse(self.path)
+        if parsed.path == "/health":
+            self.send_json(200, {"status": "ok", "service": "orbis-link", "version": "0.2"})
             return
-        if not self.path.startswith("/api/") or not self.require_authorization():
-            if not self.path.startswith("/api/"):
+        if not parsed.path.startswith("/api/") or not self.require_authorization():
+            if not parsed.path.startswith("/api/"):
                 self.send_json(404, {"error": "not_found"})
             return
-        if self.path == "/api/v1/status":
+        if parsed.path == "/api/v1/status":
             self.send_json(200, node_status(self.config))
-        elif self.path == "/api/v1/trade/signals":
-            self.send_json(200, {"signals": SIGNALS[-50:]})
+        elif parsed.path == "/api/v1/trade/signals":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int(params.get("limit", ["50"])[0])
+            except ValueError:
+                self.send_json(400, {"error": "invalid_limit"})
+                return
+            self.send_json(200, {"signals": STORE.list_signals(limit)})
+        elif parsed.path == "/api/v1/trade/summary":
+            self.send_json(200, STORE.summary())
         else:
             self.send_json(404, {"error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self.path.startswith("/api/") or not self.require_authorization():
-            if not self.path.startswith("/api/"):
+        parsed = urlparse(self.path)
+        if not parsed.path.startswith("/api/") or not self.require_authorization():
+            if not parsed.path.startswith("/api/"):
                 self.send_json(404, {"error": "not_found"})
             return
-        if self.path != "/api/v1/trade/scan":
+        if parsed.path != "/api/v1/trade/scan":
             self.send_json(404, {"error": "not_found"})
             return
 
@@ -135,9 +148,17 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("invalid content length")
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             trade_config = self.config.get("trade", {})
+            symbol = str(payload["symbol"])
+            timeframe_minutes = int(payload["timeframe_minutes"])
+            allowed_symbols = set(trade_config.get("symbols", []))
+            allowed_timeframes = set(trade_config.get("timeframes_minutes", []))
+            if allowed_symbols and symbol not in allowed_symbols:
+                raise ValueError("symbol not allowed")
+            if allowed_timeframes and timeframe_minutes not in allowed_timeframes:
+                raise ValueError("timeframe not allowed")
             signal = analyze(
-                symbol=str(payload["symbol"]),
-                timeframe_minutes=int(payload["timeframe_minutes"]),
+                symbol=symbol,
+                timeframe_minutes=timeframe_minutes,
                 candles=candles_from_rows(payload["candles"]),
                 spread_pips=float(payload["spread_pips"]),
                 maximum_spread_pips=float(trade_config.get("maximum_spread_pips", 1.5)),
@@ -150,9 +171,8 @@ class Handler(BaseHTTPRequestHandler):
         if signal is None:
             self.send_json(200, {"signal": None, "reason": "criteria_not_met"})
             return
-        data = signal.to_dict()
-        SIGNALS.append(data)
-        self.send_json(201, {"signal": data})
+        stored = STORE.save_signal(signal.to_dict())
+        self.send_json(201, {"signal": stored})
 
 
 def main() -> None:
@@ -162,6 +182,7 @@ def main() -> None:
     server = ThreadingHTTPServer((host, port), Handler)
     server.config = config  # type: ignore[attr-defined]
     print(f"Orbis Link ativo em http://{host}:{port}")
+    print(f"Banco de sinais: {STORE.database_path}")
     print("Modo de negociação: somente paper/análise; nenhuma ordem será enviada.")
     try:
         server.serve_forever()
