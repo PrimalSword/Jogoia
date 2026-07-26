@@ -8,7 +8,7 @@ CORE="$CHECKOUT/orbis/core"
 RELEASE_FILE="/etc/orbis-release"
 LOGFILE="/var/log/orbis.log"
 BACKUP_DIR="/opt/orbis-backup"
-VERSION="0.4.0"
+VERSION="0.4.1"
 FILES="orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tetris orbis-doctor orbis-keyboard"
 
 mkdir -p /opt /var/log /usr/local/bin "$BACKUP_DIR"
@@ -22,15 +22,29 @@ repair_apk() {
   mkdir -p /etc/apk
   [ -f /etc/apk/repositories ] || : > /etc/apk/repositories
 
-  if ! grep -Eq '^[^#].*/v3\.24/main' /etc/apk/repositories 2>/dev/null; then
+  if ! grep -Eq '^[^#].*/v3\.24/main([[:space:]]*)$' /etc/apk/repositories 2>/dev/null; then
     printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> /etc/apk/repositories
   fi
-  if ! grep -Eq '^[^#].*/v3\.24/community' /etc/apk/repositories 2>/dev/null; then
+  if ! grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' /etc/apk/repositories 2>/dev/null; then
     printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> /etc/apk/repositories
   fi
 
   if [ -f /etc/apk/world ]; then
-    sed -i '/^linux-firmware-iwlwifi$/d;/^linux-firmware-rtlwifi$/d' /etc/apk/world 2>/dev/null || true
+    awk '
+      {
+        line=$0
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+        if (line == "linux-firmware-iwlwifi") next
+        if (line == "linux-firmware-rtlwifi") next
+        print $0
+      }
+    ' /etc/apk/world > /tmp/orbis-world.clean
+    cat /tmp/orbis-world.clean > /etc/apk/world
+  fi
+
+  if grep -Eq '^[[:space:]]*linux-firmware-(iwlwifi|rtlwifi)[[:space:]]*$' /etc/apk/world 2>/dev/null; then
+    printf '%s\n' 'Falha ao limpar dependências incompatíveis do APK world.'
+    exit 1
   fi
 
   apk update
