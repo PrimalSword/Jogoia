@@ -4,8 +4,20 @@ set -eu
 PIDFILE="/run/orbis-core.pid"
 LOGFILE="/var/log/orbis-core.log"
 CORE="/usr/local/lib/orbis/orbis_core.py"
+SOURCE="/opt/orbis-src/orbis/core/orbis_core.py"
 PORT="${ORBIS_WEB_PORT:-8080}"
 mkdir -p /run /var/log /usr/local/lib/orbis
+
+auto_repair_core() {
+  if [ ! -s "$CORE" ] && [ -s "$SOURCE" ]; then
+    tmp="$CORE.tmp.$$"
+    install -m 0644 "$SOURCE" "$tmp"
+    python3 -m py_compile "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$CORE"
+  fi
+  [ -s "$CORE" ] || return 1
+  python3 -m py_compile "$CORE" >/dev/null 2>&1
+}
 
 pid_alive() {
   [ -f "$PIDFILE" ] || return 1
@@ -13,81 +25,74 @@ pid_alive() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
-listener_active() {
-  netstat -ltn 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}'
+health_check() {
+  python3 - "$PORT" <<'PY' >/dev/null 2>&1
+import sys, urllib.request
+port = int(sys.argv[1])
+with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
+    if r.read().strip() != b"ok":
+        raise SystemExit(1)
+PY
 }
 
-core_pids() {
-  ps 2>/dev/null | awk -v core="$CORE" '$0 ~ /python3/ && index($0, core) {print $1}'
-}
-
-recover_pidfile() {
-  for pid in $(core_pids); do
-    if kill -0 "$pid" 2>/dev/null; then
-      printf '%s\n' "$pid" > "$PIDFILE"
-      return 0
-    fi
+find_core_pids() {
+  for proc in /proc/[0-9]*; do
+    [ -r "$proc/cmdline" ] || continue
+    cmd="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+    case "$cmd" in *orbis_core.py*) printf '%s\n' "${proc##*/}" ;; esac
   done
-  return 1
-}
-
-start() {
-  if listener_active; then
-    pid_alive || recover_pidfile || true
-    printf 'Orbis Core já está ativo na porta %s.\n' "$PORT"
-    return 0
-  fi
-
-  stop >/dev/null 2>&1 || true
-  command -v python3 >/dev/null 2>&1 || {
-    printf '%s\n' 'Python 3 não está instalado. Execute “Atualizar pelo Git”.'
-    return 1
-  }
-  [ -f "$CORE" ] || {
-    printf 'Núcleo ausente: %s\n' "$CORE"
-    return 1
-  }
-
-  : > "$LOGFILE"
-  ORBIS_WEB_PORT="$PORT" python3 "$CORE" >>"$LOGFILE" 2>&1 &
-  echo $! > "$PIDFILE"
-  sleep 2
-
-  if ! listener_active; then
-    printf 'Falha ao iniciar. Últimas mensagens:\n'
-    tail -n 20 "$LOGFILE" 2>/dev/null || true
-    stop >/dev/null 2>&1 || true
-    return 1
-  fi
-
-  pid_alive || recover_pidfile || true
-  ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
-  printf 'Orbis Core iniciado: http://%s:%s\n' "${ip:-127.0.0.1}" "$PORT"
 }
 
 stop() {
-  if pid_alive; then
-    kill "$(cat "$PIDFILE")" 2>/dev/null || true
-  fi
-  for pid in $(core_pids); do
-    kill "$pid" 2>/dev/null || true
-  done
+  if pid_alive; then kill "$(cat "$PIDFILE")" 2>/dev/null || true; fi
+  for pid in $(find_core_pids); do kill "$pid" 2>/dev/null || true; done
   sleep 1
+  for pid in $(find_core_pids); do kill -9 "$pid" 2>/dev/null || true; done
   rm -f "$PIDFILE"
   printf '%s\n' 'Orbis Core parado.'
 }
 
+start() {
+  command -v python3 >/dev/null 2>&1 || { printf '%s\n' 'Python 3 não está instalado. Execute “Atualizar pelo Git”.'; return 1; }
+  if health_check; then
+    printf 'Orbis Core já está ativo na porta %s.\n' "$PORT"
+    return 0
+  fi
+  stop >/dev/null 2>&1 || true
+  auto_repair_core || { printf 'Núcleo ausente ou inválido: %s\n' "$CORE"; return 1; }
+  : > "$LOGFILE"
+  ORBIS_WEB_PORT="$PORT" python3 "$CORE" </dev/null >>"$LOGFILE" 2>&1 &
+  pid=$!
+  printf '%s\n' "$pid" > "$PIDFILE"
+  count=0
+  while [ "$count" -lt 10 ]; do
+    health_check && break
+    kill -0 "$pid" 2>/dev/null || break
+    count=$((count + 1)); sleep 1
+  done
+  if ! health_check; then
+    printf '%s\n' 'Falha ao iniciar o Orbis Core. Diagnóstico:'
+    tail -n 30 "$LOGFILE" 2>/dev/null || true
+    stop >/dev/null 2>&1 || true
+    return 1
+  fi
+  ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+  printf 'Orbis Core iniciado: http://%s:%s\n' "${ip:-127.0.0.1}" "$PORT"
+}
+
 status() {
-  if listener_active; then
-    pid_alive || recover_pidfile || true
+  if health_check; then
     printf 'ATIVO porta %s\n' "$PORT"
-    printf 'PID: %s\n' "$(cat "$PIDFILE" 2>/dev/null || printf '-')"
+    printf 'PID: %s\n' "$(cat "$PIDFILE" 2>/dev/null || printf 'recuperado')"
+    printf '%s\n' 'Saúde HTTP: OK'
   else
     printf '%s\n' 'INATIVO'
     printf 'PID: %s\n' "$(cat "$PIDFILE" 2>/dev/null || printf '-')"
+    printf '%s\n' 'Saúde HTTP: FALHA'
   fi
+  printf 'Core: %s\n' "$([ -s "$CORE" ] && printf presente || printf ausente)"
   printf '%s\n' 'Últimas mensagens:'
-  tail -n 15 "$LOGFILE" 2>/dev/null || printf '%s\n' 'sem log'
+  tail -n 20 "$LOGFILE" 2>/dev/null || printf '%s\n' 'sem log'
 }
 
 case "${1:-menu}" in
