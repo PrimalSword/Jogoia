@@ -61,7 +61,7 @@ trap 'umount "$MOUNTPOINT" 2>/dev/null || true' EXIT
 
 mkdir -p "$MOUNTPOINT/usr/local/bin" "$MOUNTPOINT/etc" "$MOUNTPOINT/opt"
 
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tetris; do
   if [ -f "/usr/local/bin/$file" ]; then
     install -m 0755 "/usr/local/bin/$file" "$MOUNTPOINT/usr/local/bin/$file"
   elif [ -f "/opt/orbis-src/orbis/core/$file" ]; then
@@ -94,7 +94,7 @@ umount "$MOUNTPOINT"
 trap - EXIT
 
 printf '\nValidação final:\n'
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tetris; do
   printf '✓ %s\n' "$file"
 done
 
