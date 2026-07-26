@@ -2,7 +2,8 @@
 set -eu
 
 BASE="/var/lib/orbis/web"
-PIDFILE="/run/orbis-web.pid"
+HTTP_PIDFILE="/run/orbis-web-http.pid"
+WORKER_PIDFILE="/run/orbis-web-worker.pid"
 LOGFILE="/var/log/orbis-web.log"
 PORT="${ORBIS_WEB_PORT:-8080}"
 mkdir -p "$BASE" /run /var/log
@@ -31,14 +32,50 @@ render() {
 EOF
 }
 
-worker() { while :; do render; sleep 10; done; }
+pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
+worker() { while :; do render || true; sleep 10; done; }
+listener_active() { netstat -ltn 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}'; }
+
 start() {
-  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then printf 'Painel já está ativo na porta %s.\n' "$PORT"; return 0; fi
+  if listener_active; then printf 'Painel já está ativo na porta %s.\n' "$PORT"; return 0; fi
+  stop >/dev/null 2>&1 || true
   render
-  busybox httpd -p "$PORT" -h "$BASE" >>"$LOGFILE" 2>&1
-  worker >>"$LOGFILE" 2>&1 & echo $! > "$PIDFILE"
+  busybox httpd -f -p "0.0.0.0:$PORT" -h "$BASE" >>"$LOGFILE" 2>&1 &
+  echo $! > "$HTTP_PIDFILE"
+  worker >>"$LOGFILE" 2>&1 &
+  echo $! > "$WORKER_PIDFILE"
+  sleep 1
+  if ! pid_alive "$HTTP_PIDFILE" || ! listener_active; then
+    printf 'Falha ao iniciar o painel. Veja %s\n' "$LOGFILE"
+    stop >/dev/null 2>&1 || true
+    return 1
+  fi
   printf 'Painel iniciado: http://%s:%s\n' "$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)" "$PORT"
 }
-stop() { [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true; rm -f "$PIDFILE"; killall httpd 2>/dev/null || true; printf 'Painel parado.\n'; }
-status() { if pgrep httpd >/dev/null 2>&1; then printf 'ATIVO porta %s\n' "$PORT"; else printf 'INATIVO\n'; fi; }
-case "${1:-menu}" in --start|start) start;; --stop|stop) stop;; --status|status) status;; --boot) start >/dev/null 2>&1 || true;; *) clear; printf 'ORBIS WEB\n─────────────────────────────────────────────\n1 Iniciar  2 Parar  3 Status  0 Voltar\n web › '; read -r c; case "$c" in 1) start;;2) stop;;3) status;;esac; printf '\nEnter...'; read -r _ || true;; esac
+
+stop() {
+  for file in "$HTTP_PIDFILE" "$WORKER_PIDFILE"; do
+    if pid_alive "$file"; then kill "$(cat "$file")" 2>/dev/null || true; fi
+    rm -f "$file"
+  done
+  killall httpd 2>/dev/null || true
+  printf 'Painel parado.\n'
+}
+
+status() {
+  if listener_active; then printf 'ATIVO porta %s\n' "$PORT"; else printf 'INATIVO\n'; fi
+}
+
+case "${1:-menu}" in
+  --start|start) start ;;
+  --stop|stop) stop ;;
+  --status|status) status ;;
+  --boot) start >/dev/null 2>&1 || true ;;
+  *)
+    clear
+    printf 'ORBIS WEB\n─────────────────────────────────────────────\n1 Iniciar  2 Parar  3 Status  0 Voltar\n web › '
+    read -r c
+    case "$c" in 1) start ;; 2) stop ;; 3) status ;; esac
+    printf '\nEnter...'; read -r _ || true
+    ;;
+esac
