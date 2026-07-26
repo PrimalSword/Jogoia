@@ -2,12 +2,26 @@
 set -u
 
 LOGFILE="/var/log/orbis.log"
-
 mkdir -p /var/log
 [ -f "$LOGFILE" ] || printf '%s\n' 'OrbisOS: nenhum evento registrado ainda.' > "$LOGFILE"
 
-if command -v less >/dev/null 2>&1; then
-  less -R "$LOGFILE"
-else
-  more "$LOGFILE"
-fi
+trap 'printf "\nVoltando ao menu.\n"; exit 0' INT TERM HUP
+
+while :; do
+  clear
+  printf '%s\n' 'ORBIS OS - LOGS'
+  printf '%s\n' '============================================='
+  printf '%s\n' 'Exibindo os 80 eventos mais recentes:'
+  printf '\n'
+  tail -n 80 "$LOGFILE" 2>/dev/null || cat "$LOGFILE"
+  printf '\n%s\n' '============================================='
+  printf '%s\n' 'ENTER ou Q - voltar ao menu'
+  printf '%s\n' 'A - atualizar esta tela'
+  printf '%s' 'Escolha: '
+  IFS= read -r choice || exit 0
+  case "$choice" in
+    a|A) continue ;;
+    q|Q|"") exit 0 ;;
+    *) exit 0 ;;
+  esac
+done
