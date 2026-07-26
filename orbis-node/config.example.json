@@ -1,0 +1,16 @@
+{
+  "node_name": "Orbis Node Itautec",
+  "listen_host": "0.0.0.0",
+  "listen_port": 8765,
+  "api_token": "troque-por-um-token-longo-e-aleatorio",
+  "trade": {
+    "enabled": true,
+    "mode": "paper",
+    "symbols": ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD"],
+    "timeframes_minutes": [1, 5],
+    "maximum_signal_age_seconds": 180,
+    "minimum_risk_reward": 1.5,
+    "maximum_spread_pips": 1.5,
+    "news_lockout_minutes": 15
+  }
+}
