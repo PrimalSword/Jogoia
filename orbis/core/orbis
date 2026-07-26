@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="0.6.0"
+DEFAULT_VERSION="0.7.0"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -16,14 +16,12 @@ power_status() {
   BAT_DIR=""; AC_ONLINE=""
   for path in /sys/class/power_supply/BAT*; do [ -d "$path" ] && { BAT_DIR="$path"; break; }; done
   for path in /sys/class/power_supply/*; do
-    [ -d "$path" ] || continue
-    [ -f "$path/type" ] || continue
+    [ -d "$path" ] || continue; [ -f "$path/type" ] || continue
     TYPE="$(cat "$path/type" 2>/dev/null || true)"
     case "$TYPE" in Mains|USB|USB_C|USB_PD) [ -f "$path/online" ] && [ "$(cat "$path/online" 2>/dev/null)" = "1" ] && AC_ONLINE="1" ;; esac
   done
   if [ -n "$BAT_DIR" ]; then
-    CAPACITY="$(cat "$BAT_DIR/capacity" 2>/dev/null || true)"
-    STATUS="$(cat "$BAT_DIR/status" 2>/dev/null || true)"
+    CAPACITY="$(cat "$BAT_DIR/capacity" 2>/dev/null || true)"; STATUS="$(cat "$BAT_DIR/status" 2>/dev/null || true)"
     case "$STATUS" in Charging) LABEL="carregando" ;; Discharging) LABEL="na bateria" ;; Full) LABEL="carregada" ;; "Not charging") LABEL="conectada à energia" ;; *) [ "$AC_ONLINE" = "1" ] && LABEL="conectada à energia" || LABEL="na bateria" ;; esac
     [ -n "$CAPACITY" ] && printf '%s%% (%s)' "$CAPACITY" "$LABEL" || printf '%s' "$LABEL"
   elif [ "$AC_ONLINE" = "1" ]; then printf '%s' 'conectada à energia'; else printf '%s' 'indisponível'; fi
@@ -31,72 +29,34 @@ power_status() {
 
 wifi_status() {
   WIFI_IFACE=""
-  for path in /sys/class/net/*; do
-    [ -e "$path" ] || continue
-    iface="${path##*/}"
-    case "$iface" in wlan*|wlp*) WIFI_IFACE="$iface"; break ;; esac
-  done
-  WIFI_SSID="desconectada"; WIFI_SIGNAL="indisponível"
-  [ -n "$WIFI_IFACE" ] || return 0
+  for path in /sys/class/net/*; do [ -e "$path" ] || continue; iface="${path##*/}"; case "$iface" in wlan*|wlp*) WIFI_IFACE="$iface"; break ;; esac; done
+  WIFI_SSID="desconectada"; WIFI_SIGNAL="indisponível"; [ -n "$WIFI_IFACE" ] || return 0
   LINK="$(iw dev "$WIFI_IFACE" link 2>/dev/null || true)"
-  SSID="$(printf '%s\n' "$LINK" | awk -F': ' '/SSID:/ {print $2; exit}')"
-  SIGNAL="$(printf '%s\n' "$LINK" | awk '/signal:/ {print $2 " " $3; exit}')"
-  [ -n "$SSID" ] && WIFI_SSID="$SSID"
-  [ -n "$SIGNAL" ] && WIFI_SIGNAL="$SIGNAL"
+  SSID="$(printf '%s\n' "$LINK" | awk -F': ' '/SSID:/ {print $2; exit}')"; SIGNAL="$(printf '%s\n' "$LINK" | awk '/signal:/ {print $2 " " $3; exit}')"
+  [ -n "$SSID" ] && WIFI_SSID="$SSID"; [ -n "$SIGNAL" ] && WIFI_SIGNAL="$SIGNAL"
 }
 
 format_uptime() {
-  seconds="$(cut -d. -f1 /proc/uptime 2>/dev/null || printf 0)"
-  days=$((seconds / 86400))
-  hours=$(((seconds % 86400) / 3600))
-  minutes=$(((seconds % 3600) / 60))
-  if [ "$days" -gt 0 ]; then
-    printf '%sd %02sh %02sm' "$days" "$hours" "$minutes"
-  elif [ "$hours" -gt 0 ]; then
-    printf '%sh %02sm' "$hours" "$minutes"
-  else
-    printf '%sm' "$minutes"
-  fi
+  seconds="$(cut -d. -f1 /proc/uptime 2>/dev/null || printf 0)"; days=$((seconds / 86400)); hours=$(((seconds % 86400) / 3600)); minutes=$(((seconds % 3600) / 60))
+  if [ "$days" -gt 0 ]; then printf '%sd %02sh %02sm' "$days" "$hours" "$minutes"; elif [ "$hours" -gt 0 ]; then printf '%sh %02sm' "$hours" "$minutes"; else printf '%sm' "$minutes"; fi
 }
 
 cpu_temperature() {
-  for zone in /sys/class/thermal/thermal_zone*/temp; do
-    [ -r "$zone" ] || continue
-    raw="$(cat "$zone" 2>/dev/null || true)"
-    case "$raw" in ''|*[!0-9]*) continue ;; esac
-    if [ "$raw" -ge 1000 ]; then printf '%s°C' "$((raw / 1000))"; else printf '%s°C' "$raw"; fi
-    return 0
-  done
+  for zone in /sys/class/thermal/thermal_zone*/temp; do [ -r "$zone" ] || continue; raw="$(cat "$zone" 2>/dev/null || true)"; case "$raw" in ''|*[!0-9]*) continue ;; esac; if [ "$raw" -ge 1000 ]; then printf '%s°C' "$((raw / 1000))"; else printf '%s°C' "$raw"; fi; return 0; done
   printf '%s' 'indisponível'
 }
-
-storage_status() {
-  df -hP / 2>/dev/null | awk 'NR==2 {printf "%s usados de %s (%s)", $3, $2, $5; exit}'
-}
-
-clock_status() {
-  year="$(date +%Y 2>/dev/null || printf 0)"
-  if [ "$year" -ge 2024 ] 2>/dev/null; then
-    date '+%d/%m/%Y %H:%M' 2>/dev/null || printf '%s' 'válido'
-  else
-    printf '%s' 'INCORRETO — sincronize'
-  fi
+storage_status() { df -hP / 2>/dev/null | awk 'NR==2 {printf "%s usados de %s (%s)", $3, $2, $5; exit}'; }
+clock_status() { year="$(date +%Y 2>/dev/null || printf 0)"; if [ "$year" -ge 2024 ] 2>/dev/null; then date '+%d/%m/%Y %H:%M' 2>/dev/null || printf '%s' 'válido'; else printf '%s' 'INCORRETO — sincronize'; fi; }
+automation_status() {
+  total=0; active=0
+  for file in /var/lib/orbis/jobs/*.job; do [ -f "$file" ] || continue; total=$((total + 1)); name="${file##*/}"; name="${name%.job}"; [ -f "/var/lib/orbis/jobs/$name.enabled" ] && active=$((active + 1)); done
+  printf '%s cadastradas, %s ativas' "$total" "$active"
 }
 
 show_status() {
-  MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"
-  CPU="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)"
-  [ -n "$CPU" ] || CPU="$(uname -m)"
-  IP="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)"
-  [ -n "$IP" ] || IP="desconectada"
-  POWER="$(power_status)"
-  UPTIME="$(format_uptime)"
-  TEMP="$(cpu_temperature)"
-  STORAGE="$(storage_status)"
-  CLOCK="$(clock_status)"
-  [ -n "$STORAGE" ] || STORAGE="indisponível"
-  LOAD="$(awk '{print $1}' /proc/loadavg 2>/dev/null || printf '?')"
-  wifi_status
+  MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"; CPU="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)"; [ -n "$CPU" ] || CPU="$(uname -m)"
+  IP="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)"; [ -n "$IP" ] || IP="desconectada"
+  POWER="$(power_status)"; UPTIME="$(format_uptime)"; TEMP="$(cpu_temperature)"; STORAGE="$(storage_status)"; CLOCK="$(clock_status)"; AUTOMATIONS="$(automation_status)"; LOAD="$(awk '{print $1}' /proc/loadavg 2>/dev/null || printf '?')"; wifi_status
   clear
   printf '%s\n' '   ____  ____  ____  ___ ____'
   printf '%s\n' '  / __ \/ __ \/ __ )/  _/ __/'
@@ -104,63 +64,21 @@ show_status() {
   printf '%s\n' ' \____/\____/_____/___/___/'
   printf '  ORBIS OS  %s  •  %s\n' "$VERSION" "$SHORT_COMMIT"
   printf '%s\n' '─────────────────────────────────────────────'
-  printf ' SISTEMA   %s\n' 'ONLINE'
-  printf ' CPU       %s\n' "$CPU"
-  printf ' MEMÓRIA   %s MB\n' "$MEM_MB"
-  printf ' CARGA     %s\n' "$LOAD"
-  printf ' TEMP.     %s\n' "$TEMP"
-  printf ' UPTIME    %s\n' "$UPTIME"
-  printf ' DISCO     %s\n' "$STORAGE"
-  printf ' RELÓGIO   %s\n' "$CLOCK"
-  printf ' ENERGIA   %s\n' "$POWER"
-  printf ' WI-FI     %s  (%s)\n' "$WIFI_SSID" "$WIFI_SIGNAL"
-  printf ' IP        %s\n' "$IP"
-  printf ' HOST      %s\n' "$(hostname 2>/dev/null || printf orbis)"
+  printf ' SISTEMA   ONLINE\n CPU       %s\n MEMÓRIA   %s MB\n CARGA     %s\n TEMP.     %s\n UPTIME    %s\n DISCO     %s\n RELÓGIO   %s\n ENERGIA   %s\n WI-FI     %s  (%s)\n IP        %s\n HOST      %s\n AUTOMAÇÕES %s\n' "$CPU" "$MEM_MB" "$LOAD" "$TEMP" "$UPTIME" "$STORAGE" "$CLOCK" "$POWER" "$WIFI_SSID" "$WIFI_SIGNAL" "$IP" "$(hostname 2>/dev/null || printf orbis)" "$AUTOMATIONS"
   printf '%s\n\n' '─────────────────────────────────────────────'
 }
-
-run_orbis_command() {
-  command_path="$BIN_DIR/$1"
-  [ -x "$command_path" ] || { printf 'Componente indisponível: %s\n' "$command_path"; return 1; }
-  "$command_path"
-}
-
+run_orbis_command() { command_path="$BIN_DIR/$1"; [ -x "$command_path" ] || { printf 'Componente indisponível: %s\n' "$command_path"; return 1; }; "$command_path"; }
 pause_menu() { printf '\nPressione Enter para voltar...'; read -r _ || true; }
 
 show_status
 [ "${1:-}" = "--status" ] && exit 0
-
 while :; do
   printf '%s\n' ' APLICATIVOS'
-  printf '%s\n' '  1  Tetris'
-  printf '%s\n' '  2  Configurar Wi-Fi'
-  printf '%s\n' '  3  Configurar teclado'
-  printf '%s\n' '  4  Orbis Doctor'
-  printf '%s\n' ''
-  printf '%s\n' ' SISTEMA'
-  printf '%s\n' '  5  Atualizar pelo Git'
-  printf '%s\n' '  6  Ver logs'
-  printf '%s\n' '  7  Instalar no cartão/disco'
-  printf '%s\n' '  8  Atualizar painel'
-  printf '%s\n' '  9  Reiniciar'
-  printf '%s\n' ' 10  Desligar'
-  printf '%s\n' ' 11  Sincronizar horário'
-  printf '%s\n' '  0  Terminal'
-  printf '\n%s' ' orbis › '
-  read -r choice || exit 0
+  printf '%s\n' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações'
+  printf '%s\n' '' ' SISTEMA' '  5  Atualizar pelo Git' '  6  Ver logs' '  7  Instalar no cartão/disco' '  8  Atualizar painel' '  9  Reiniciar' ' 10  Desligar' ' 11  Sincronizar horário' '  0  Terminal'
+  printf '\n%s' ' orbis › '; read -r choice || exit 0
   case "$choice" in
-    1) run_orbis_command orbis-tetris; show_status ;;
-    2) run_orbis_command orbis-wifi; pause_menu; show_status ;;
-    3) run_orbis_command orbis-keyboard; pause_menu; show_status ;;
-    4) run_orbis_command orbis-doctor; pause_menu; show_status ;;
-    5) run_orbis_command orbis-update; pause_menu; show_status ;;
-    6) run_orbis_command orbis-log; show_status ;;
-    7) run_orbis_command orbis-install; pause_menu; show_status ;;
-    8) show_status ;;
-    9) reboot ;;
-    10) poweroff ;;
-    11) run_orbis_command orbis-time; pause_menu; show_status ;;
-    0) exit 0 ;;
-    *) printf 'Opção inválida.\n' ;;
+    1) run_orbis_command orbis-tetris; show_status ;; 2) run_orbis_command orbis-wifi; pause_menu; show_status ;; 3) run_orbis_command orbis-keyboard; pause_menu; show_status ;; 4) run_orbis_command orbis-doctor; pause_menu; show_status ;;
+    5) run_orbis_command orbis-update; pause_menu; show_status ;; 6) run_orbis_command orbis-log; show_status ;; 7) run_orbis_command orbis-install; pause_menu; show_status ;; 8) show_status ;; 9) reboot ;; 10) poweroff ;; 11) run_orbis_command orbis-time; pause_menu; show_status ;; 12) run_orbis_command orbis-jobs; show_status ;; 0) exit 0 ;; *) printf 'Opção inválida.\n' ;;
   esac
 done
