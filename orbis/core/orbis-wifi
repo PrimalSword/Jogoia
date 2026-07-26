@@ -1,56 +1,87 @@
 #!/bin/sh
-set -u
+set -eu
 
 LOGFILE="/var/log/orbis.log"
-mkdir -p /var/log
+CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
+mkdir -p /var/log /etc/wpa_supplicant
+
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE"
 }
 
-printf '%s\n' 'ORBIS OS - CONFIGURAÇÃO DE REDE'
-printf '%s\n' '---------------------------------------------'
+printf '%s\n' 'ORBIS OS - CONFIGURAÇÃO DE WI-FI'
+printf '%s\n' '============================================='
 
-if command -v rfkill >/dev/null 2>&1; then
-  rfkill unblock all 2>/dev/null || true
-fi
+command -v modprobe >/dev/null 2>&1 && modprobe ath9k 2>/dev/null || true
+command -v rfkill >/dev/null 2>&1 && rfkill unblock all 2>/dev/null || true
 
-for module in ath9k ath5k iwlwifi rtl8xxxu rtl8192ce rtl8192se b43 brcmsmac; do
-  modprobe "$module" 2>/dev/null || true
-done
-
-INTERFACES="$(find /sys/class/net -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | grep -v '^lo$' || true)"
-
-if [ -z "$INTERFACES" ]; then
-  printf '%s\n' 'Nenhuma placa de rede foi reconhecida.'
-  printf '%s\n' 'Confira a chave física/Fn do Wi-Fi e tente novamente.'
-  if command -v lspci >/dev/null 2>&1; then
-    printf '\nDispositivos de rede encontrados no PCI:\n'
-    lspci -nn | grep -Ei 'network|wireless|ethernet' || true
-  fi
-  log 'Falha: nenhuma interface de rede encontrada.'
-  exit 1
-fi
-
-for iface in $INTERFACES; do
+WIFI_IFACE=""
+for path in /sys/class/net/*; do
+  [ -e "$path" ] || continue
+  iface="${path##*/}"
   case "$iface" in
-    wlan*|wlp*) ifconfig "$iface" up 2>/dev/null || ip link set "$iface" up 2>/dev/null || true ;;
+    wlan*|wlp*) WIFI_IFACE="$iface"; break ;;
   esac
 done
 
-printf 'Interfaces encontradas: %s\n\n' "$INTERFACES"
-log "Interfaces encontradas: $INTERFACES"
-
-if ! command -v setup-interfaces >/dev/null 2>&1; then
-  printf '%s\n' 'O configurador de rede não está disponível nesta imagem.'
-  log 'Falha: setup-interfaces ausente.'
+if [ -z "$WIFI_IFACE" ]; then
+  printf '%s\n' 'Nenhuma interface Wi-Fi foi reconhecida.'
+  printf '%s\n' 'Interfaces existentes:'
+  for path in /sys/class/net/*; do [ -e "$path" ] && printf ' - %s\n' "${path##*/}"; done
+  log 'Falha: nenhuma interface Wi-Fi encontrada.'
   exit 1
 fi
 
-setup-interfaces
-rc-service networking restart 2>/dev/null || rc-service networking start 2>/dev/null || true
-rc-service wpa_supplicant restart 2>/dev/null || rc-service wpa_supplicant start 2>/dev/null || true
-sleep 3
+ifconfig "$WIFI_IFACE" up 2>/dev/null || ip link set "$WIFI_IFACE" up
+printf 'Interface encontrada: %s\n\n' "$WIFI_IFACE"
 
-printf '\nEstado atual:\n'
-ip -brief address 2>/dev/null || ip address
-log 'Configuração de rede concluída.'
+printf '%s\n' 'Redes próximas:'
+iwlist "$WIFI_IFACE" scan 2>/dev/null | awk -F'"' '/ESSID:/ && $2 != "" {print $2}' | awk '!seen[$0]++' | nl -w2 -s' - ' || true
+
+printf '\nDigite exatamente o nome da rede (SSID): '
+read -r SSID
+[ -n "$SSID" ] || { printf '%s\n' 'Nome da rede vazio.'; exit 1; }
+
+printf 'Digite a senha da rede: '
+stty -echo 2>/dev/null || true
+read -r PASSWORD
+stty echo 2>/dev/null || true
+printf '\n'
+[ -n "$PASSWORD" ] || { printf '%s\n' 'Senha vazia.'; exit 1; }
+
+command -v wpa_passphrase >/dev/null 2>&1 || {
+  printf '%s\n' 'wpa_passphrase não está disponível.'
+  exit 1
+}
+
+wpa_passphrase "$SSID" "$PASSWORD" > "$CONF"
+chmod 600 "$CONF"
+
+killall wpa_supplicant 2>/dev/null || true
+wpa_supplicant -B -i "$WIFI_IFACE" -c "$CONF"
+sleep 3
+udhcpc -i "$WIFI_IFACE" -q -t 8
+
+IP="$(ip -4 -o addr show dev "$WIFI_IFACE" 2>/dev/null | awk '{print $4}' | head -n1)"
+if [ -z "$IP" ]; then
+  printf '%s\n' 'Não foi possível obter endereço IP.'
+  log "Falha de DHCP em $WIFI_IFACE para SSID $SSID."
+  exit 1
+fi
+
+# Persistência para o próximo boot.
+cat > /etc/network/interfaces <<EOF
+auto lo
+iface lo inet loopback
+
+auto $WIFI_IFACE
+iface $WIFI_IFACE inet dhcp
+EOF
+
+rc-update add networking default >/dev/null 2>&1 || true
+rc-update add wpa_supplicant default >/dev/null 2>&1 || true
+
+printf '\nConectado com sucesso.\n'
+printf 'Rede: %s\n' "$SSID"
+printf 'IP:   %s\n' "$IP"
+log "Wi-Fi conectado: interface=$WIFI_IFACE ssid=$SSID ip=$IP"
