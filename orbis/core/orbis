@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="0.3.0"
+DEFAULT_VERSION="0.3.1"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -39,31 +39,40 @@ power_status() {
   if [ -n "$BAT_DIR" ]; then
     CAPACITY="$(cat "$BAT_DIR/capacity" 2>/dev/null || true)"
     STATUS="$(cat "$BAT_DIR/status" 2>/dev/null || true)"
-
     case "$STATUS" in
       Charging) LABEL="carregando" ;;
       Discharging) LABEL="na bateria" ;;
       Full) LABEL="carregada" ;;
       "Not charging") LABEL="conectada à energia" ;;
       *)
-        if [ "$AC_ONLINE" = "1" ]; then
-          LABEL="conectada à energia"
-        else
-          LABEL="na bateria"
-        fi
+        if [ "$AC_ONLINE" = "1" ]; then LABEL="conectada à energia"; else LABEL="na bateria"; fi
         ;;
     esac
-
-    if [ -n "$CAPACITY" ]; then
-      printf '%s%% (%s)' "$CAPACITY" "$LABEL"
-    else
-      printf '%s' "$LABEL"
-    fi
+    if [ -n "$CAPACITY" ]; then printf '%s%% (%s)' "$CAPACITY" "$LABEL"; else printf '%s' "$LABEL"; fi
   elif [ "$AC_ONLINE" = "1" ]; then
     printf '%s' 'conectada à energia'
   else
     printf '%s' 'indisponível'
   fi
+}
+
+wifi_status() {
+  WIFI_IFACE=""
+  for path in /sys/class/net/*; do
+    [ -e "$path" ] || continue
+    iface="${path##*/}"
+    case "$iface" in wlan*|wlp*) WIFI_IFACE="$iface"; break ;; esac
+  done
+
+  WIFI_SSID="desconectada"
+  WIFI_SIGNAL="indisponível"
+  [ -n "$WIFI_IFACE" ] || return 0
+
+  LINK="$(iw dev "$WIFI_IFACE" link 2>/dev/null || true)"
+  SSID="$(printf '%s\n' "$LINK" | awk -F': ' '/SSID:/ {print $2; exit}')"
+  SIGNAL="$(printf '%s\n' "$LINK" | awk '/signal:/ {print $2 " " $3; exit}')"
+  [ -n "$SSID" ] && WIFI_SSID="$SSID"
+  [ -n "$SIGNAL" ] && WIFI_SIGNAL="$SIGNAL"
 }
 
 show_status() {
@@ -73,6 +82,7 @@ show_status() {
   IP="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)"
   [ -n "$IP" ] || IP="desconectada"
   POWER="$(power_status)"
+  wifi_status
 
   clear
   printf '%s\n' '============================================='
@@ -83,7 +93,9 @@ show_status() {
   printf 'Processador... %s\n' "$CPU"
   printf 'Memória....... %s MB\n' "$MEM_MB"
   printf 'Energia....... %s\n' "$POWER"
-  printf 'Rede.......... %s\n' "$IP"
+  printf 'Wi-Fi......... %s\n' "$WIFI_SSID"
+  printf 'Sinal......... %s\n' "$WIFI_SIGNAL"
+  printf 'IP............ %s\n' "$IP"
   printf 'Hostname...... %s\n' "$(hostname 2>/dev/null || printf orbis)"
   printf 'Commit........ %s\n' "$SHORT_COMMIT"
   printf 'Terminal...... pronto\n'
@@ -93,12 +105,10 @@ show_status() {
 run_orbis_command() {
   command_name="$1"
   command_path="$BIN_DIR/$command_name"
-
   if [ ! -x "$command_path" ]; then
     printf 'Componente indisponível ou sem permissão: %s\n' "$command_path"
     return 1
   fi
-
   "$command_path"
 }
 
@@ -110,19 +120,19 @@ while :; do
   printf '%s\n' '2 - Configurar Wi-Fi'
   printf '%s\n' '3 - Instalar no cartão/disco'
   printf '%s\n' '4 - Atualizar pelo Git'
-  printf '%s\n' '5 - Ver logs / rolar histórico'
+  printf '%s\n' '5 - Ver logs'
   printf '%s\n' '6 - Atualizar status'
   printf '%s\n' '7 - Reiniciar'
   printf '%s\n' '8 - Desligar'
   printf '%s\n' '0 - Voltar ao terminal'
   printf '%s' 'Escolha: '
-  read -r choice
+  read -r choice || exit 0
 
   case "$choice" in
     1) run_orbis_command orbis-tetris; show_status ;;
-    2) run_orbis_command orbis-wifi; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    3) run_orbis_command orbis-install; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    4) run_orbis_command orbis-update; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
+    2) run_orbis_command orbis-wifi; printf '\nPressione Enter para voltar...'; read -r _ || true; show_status ;;
+    3) run_orbis_command orbis-install; printf '\nPressione Enter para voltar...'; read -r _ || true; show_status ;;
+    4) run_orbis_command orbis-update; printf '\nPressione Enter para voltar...'; read -r _ || true; show_status ;;
     5) run_orbis_command orbis-log; show_status ;;
     6) show_status ;;
     7) reboot ;;
