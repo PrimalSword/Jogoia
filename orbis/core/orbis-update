@@ -7,7 +7,7 @@ CHECKOUT="/opt/orbis-src"
 CORE="$CHECKOUT/orbis/core"
 RELEASE_FILE="/etc/orbis-release"
 LOGFILE="/var/log/orbis.log"
-VERSION="0.3.0"
+VERSION="0.3.1"
 
 mkdir -p /opt /var/log /usr/local/bin
 log() {
@@ -60,4 +60,4 @@ log "Orbis atualizado pelo Git para $COMMIT"
 printf '\nOrbis atualizado com sucesso.\n'
 printf 'Versão instalada: %s\n' "$VERSION"
 printf 'Commit instalado: %s\n' "$SHORT"
-printf '%s\n' 'Os componentes principais, o login e o Tetris foram validados.'
+printf '%s\n' 'Wi-Fi, reconexão automática, logs e Tetris foram validados.'
