@@ -1,51 +1,82 @@
 #!/bin/sh
 
 hostname orbis 2>/dev/null || true
-mkdir -p /var/log
+mkdir -p /var/log /run
 
 # A instalação em ext4 pode iniciar a raiz como somente leitura.
-# Libera escrita para logs, rede e futuras atualizações.
 mount -o remount,rw / 2>/dev/null || true
 
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf boot)" "$*" >> /var/log/orbis.log 2>/dev/null || true
 }
 
+find_wifi_iface() {
+  WIFI_IFACE=""
+  count=0
+  while [ "$count" -lt 15 ]; do
+    for path in /sys/class/net/*; do
+      [ -e "$path" ] || continue
+      iface="${path##*/}"
+      case "$iface" in
+        wlan*|wlp*) WIFI_IFACE="$iface"; return 0 ;;
+      esac
+    done
+    count=$((count + 1))
+    sleep 1
+  done
+  return 1
+}
+
 auto_connect_wifi() {
   CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
-  [ -s "$CONF" ] || return 0
-
-  WIFI_IFACE=""
-  for path in /sys/class/net/*; do
-    [ -e "$path" ] || continue
-    iface="${path##*/}"
-    case "$iface" in
-      wlan*|wlp*) WIFI_IFACE="$iface"; break ;;
-    esac
-  done
-
-  [ -n "$WIFI_IFACE" ] || { log 'Wi-Fi automático: interface não encontrada.'; return 0; }
+  [ -s "$CONF" ] || { log 'Wi-Fi automático: nenhuma configuração salva.'; return 0; }
 
   command -v modprobe >/dev/null 2>&1 && modprobe ath9k 2>/dev/null || true
   command -v rfkill >/dev/null 2>&1 && rfkill unblock all 2>/dev/null || true
+
+  if ! find_wifi_iface; then
+    log 'Wi-Fi automático: interface não encontrada após 15 segundos.'
+    return 0
+  fi
+
   ifconfig "$WIFI_IFACE" up 2>/dev/null || ip link set "$WIFI_IFACE" up 2>/dev/null || true
 
   if ! iw dev "$WIFI_IFACE" link 2>/dev/null | grep -q '^Connected to '; then
     killall wpa_supplicant 2>/dev/null || true
-    wpa_supplicant -B -i "$WIFI_IFACE" -c "$CONF" >/dev/null 2>&1 || {
+    rm -f /run/orbis-wpa.pid
+    wpa_supplicant -B -P /run/orbis-wpa.pid -i "$WIFI_IFACE" -c "$CONF" >/dev/null 2>&1 || {
       log "Wi-Fi automático: falha ao iniciar wpa_supplicant em $WIFI_IFACE."
       return 0
     }
-    sleep 3
+
+    connected=0
+    count=0
+    while [ "$count" -lt 15 ]; do
+      if iw dev "$WIFI_IFACE" link 2>/dev/null | grep -q '^Connected to '; then
+        connected=1
+        break
+      fi
+      count=$((count + 1))
+      sleep 1
+    done
+    [ "$connected" -eq 1 ] || {
+      log "Wi-Fi automático: autenticação não concluída em $WIFI_IFACE."
+      return 0
+    }
   fi
 
   if ! ip -4 -o addr show dev "$WIFI_IFACE" scope global 2>/dev/null | grep -q 'inet '; then
-    udhcpc -i "$WIFI_IFACE" -q -t 5 -T 2 >/dev/null 2>&1 || true
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 20 udhcpc -i "$WIFI_IFACE" -q -t 5 -T 3 >/dev/null 2>&1 || true
+    else
+      udhcpc -i "$WIFI_IFACE" -q -t 5 -T 3 >/dev/null 2>&1 || true
+    fi
   fi
 
   IP="$(ip -4 -o addr show dev "$WIFI_IFACE" scope global 2>/dev/null | awk '{print $4}' | head -n1)"
+  SSID="$(iw dev "$WIFI_IFACE" link 2>/dev/null | awk -F': ' '/SSID:/ {print $2; exit}')"
   if [ -n "$IP" ]; then
-    log "Wi-Fi automático conectado: interface=$WIFI_IFACE ip=$IP"
+    log "Wi-Fi automático conectado: interface=$WIFI_IFACE ssid=${SSID:-desconhecida} ip=$IP"
   else
     log "Wi-Fi automático sem IP: interface=$WIFI_IFACE"
   fi
