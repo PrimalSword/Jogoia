@@ -9,6 +9,8 @@ Fundação do **Orbis Link** e do **Orbis Trade Forex** para o Itautec/Alpine.
 - leitura remota de estado do nó;
 - fila de sinais para o aplicativo Android;
 - scanner Forex desacoplado da fonte de cotações;
+- persistência SQLite dos sinais;
+- replay CSV determinístico para testes;
 - operação somente informativa, sem envio de ordens;
 - foco inicial em M1 e M5.
 
@@ -28,7 +30,11 @@ A arquitetura separa a coleta de preços do motor de análise. Assim, podemos co
 orbis-node/
 ├── config.example.json
 ├── orbis_link.py
+├── orbis_provider.py
+├── orbis_storage.py
 ├── orbis_trade.py
+├── replay.py
+├── test_replay.py
 └── README.md
 ```
 
@@ -42,12 +48,43 @@ python3 orbis_link.py
 
 O serviço escuta, por padrão, em `0.0.0.0:8765`.
 
+## Replay CSV
+
+O CSV deve conter, no mínimo:
+
+```text
+timestamp,open,high,low,close
+```
+
+Também aceita `volume` e `spread_pips`.
+
+Exemplo de execução sem gravar no banco:
+
+```sh
+python3 replay.py candles.csv --symbol EUR_USD --timeframe 1 --dry-run
+```
+
+Execução gravando os sinais no SQLite:
+
+```sh
+python3 replay.py candles.csv --symbol EUR_USD --timeframe 1
+```
+
+O provedor produz janelas progressivas de candles, executa o mesmo motor usado pela API e grava apenas sinais que atendem aos critérios configurados.
+
+## Testes
+
+```sh
+python3 -m unittest test_replay.py
+```
+
 ## Endpoints iniciais
 
 - `GET /health` — disponibilidade do serviço;
-- `GET /api/v1/status` — CPU, memória, uptime, IP e versão;
-- `GET /api/v1/trade/signals` — sinais recentes;
-- `POST /api/v1/trade/scan` — executa uma varredura usando dados de teste/replay.
+- `GET /api/v1/status` — CPU, memória, uptime, IP, versão e resumo do Trade;
+- `GET /api/v1/trade/signals?limit=50` — sinais persistidos;
+- `GET /api/v1/trade/summary` — estatísticas do banco;
+- `POST /api/v1/trade/scan` — executa uma varredura usando candles enviados pelo cliente.
 
 Todos os endpoints em `/api/` exigem:
 
@@ -61,8 +98,7 @@ O serviço não expõe shell. Reiniciar, desligar e atualizar serão implementad
 
 ## Próximos passos
 
-1. persistência SQLite dos sinais e resultados;
-2. provedor de cotações Forex;
-3. cálculo de spread, EMA, ATR e RSI;
-4. backtest com custos e slippage;
-5. aplicativo Android para pareamento, status e notificações.
+1. avaliação automática dos sinais abertos contra candles posteriores;
+2. backtest com spread, slippage e custos;
+3. adaptador para uma fonte gratuita ou conta demo;
+4. aplicativo Android para pareamento, status e notificações.
