@@ -7,7 +7,7 @@ CHECKOUT="/opt/orbis-src"
 CORE="$CHECKOUT/orbis/core"
 RELEASE_FILE="/etc/orbis-release"
 LOGFILE="/var/log/orbis.log"
-VERSION="0.2.5"
+VERSION="0.3.0"
 
 mkdir -p /opt /var/log /usr/local/bin
 log() {
@@ -41,7 +41,7 @@ fi
 
 [ -d "$CORE" ] || { printf '%s\n' 'Estrutura orbis/core não encontrada.'; exit 1; }
 
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tetris; do
   [ -f "$CORE/$file" ] || { printf 'Arquivo ausente: %s\n' "$file"; exit 1; }
   install -m 0755 "$CORE/$file" "/usr/local/bin/$file"
 done
@@ -60,4 +60,4 @@ log "Orbis atualizado pelo Git para $COMMIT"
 printf '\nOrbis atualizado com sucesso.\n'
 printf 'Versão instalada: %s\n' "$VERSION"
 printf 'Commit instalado: %s\n' "$SHORT"
-printf '%s\n' 'Os componentes principais e o login foram validados.'
+printf '%s\n' 'Os componentes principais, o login e o Tetris foram validados.'
