@@ -1,26 +1,61 @@
 #!/bin/sh
 set -eu
 
-URL="https://github.com/PrimalSword/Jogoia/archive/refs/heads/orbis-os.tar.gz"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+REPO_URL="https://github.com/PrimalSword/Jogoia.git"
+BRANCH="main"
+CHECKOUT="/opt/orbis-src"
+CORE="$CHECKOUT/orbis/core"
+RELEASE_FILE="/etc/orbis-release"
+LOGFILE="/var/log/orbis.log"
 
-printf '%s\n' 'Verificando atualização do Orbis...'
+mkdir -p /opt /var/log
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE"
+}
 
-if ! command -v curl >/dev/null 2>&1; then
-  printf '%s\n' 'curl não está instalado.'
+printf '%s\n' 'ORBIS OS - ATUALIZAÇÃO PELO GIT'
+printf '%s\n' '============================================='
+
+command -v git >/dev/null 2>&1 || {
+  printf '%s\n' 'Git não está instalado. Tentando instalar...'
+  apk update
+  apk add git ca-certificates
+  update-ca-certificates 2>/dev/null || true
+}
+
+ping -c 1 github.com >/dev/null 2>&1 || {
+  printf '%s\n' 'Sem acesso ao GitHub. Confira o Wi-Fi.'
   exit 1
+}
+
+if [ -d "$CHECKOUT/.git" ]; then
+  printf '%s\n' 'Atualizando repositório existente...'
+  git -C "$CHECKOUT" fetch origin "$BRANCH"
+  git -C "$CHECKOUT" reset --hard "origin/$BRANCH"
+else
+  printf '%s\n' 'Clonando o OrbisOS pela primeira vez...'
+  rm -rf "$CHECKOUT"
+  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"
 fi
 
-curl -fL --retry 3 "$URL" -o "$TMP/orbis.tar.gz"
-tar -xzf "$TMP/orbis.tar.gz" -C "$TMP"
-SRC="$TMP/Jogoia-orbis-os/orbis/core"
+[ -d "$CORE" ] || { printf '%s\n' 'Estrutura orbis/core não encontrada.'; exit 1; }
 
-[ -d "$SRC" ] || { printf '%s\n' 'Pacote de atualização inválido.'; exit 1; }
-
-for file in orbis orbis-wifi orbis-install orbis-update; do
-  [ -f "$SRC/$file" ] || { printf 'Arquivo ausente: %s\n' "$file"; exit 1; }
-  install -m 0755 "$SRC/$file" "/usr/local/bin/$file"
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log; do
+  [ -f "$CORE/$file" ] || { printf 'Arquivo ausente: %s\n' "$file"; exit 1; }
+  install -m 0755 "$CORE/$file" "/usr/local/bin/$file"
 done
 
-printf '%s\n' 'Orbis atualizado com sucesso.'
+COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
+SHORT="$(git -C "$CHECKOUT" rev-parse --short HEAD)"
+cat > "$RELEASE_FILE" <<EOF
+ORBIS_VERSION=0.2.2
+ORBIS_BRANCH=$BRANCH
+ORBIS_COMMIT=$COMMIT
+ORBIS_REPOSITORY=$REPO_URL
+UPDATED_AT=$(date -Iseconds 2>/dev/null || date)
+EOF
+
+log "Orbis atualizado pelo Git para $COMMIT"
+printf '\nOrbis atualizado com sucesso.\n'
+printf 'Commit instalado: %s\n' "$SHORT"
+printf '%s\n' 'Não é necessário gerar outra ISO para alterações nos scripts.'
