@@ -1,24 +1,32 @@
 #!/bin/sh
 set -eu
 REPO_URL="https://github.com/PrimalSword/Jogoia.git"; BRANCH="main"; CHECKOUT="/opt/orbis-src"; CORE="$CHECKOUT/orbis/core"; RELEASE_FILE="/etc/orbis-release"; LOGFILE="/var/log/orbis.log"; BACKUP_DIR="/opt/orbis-backup"
-VERSION="0.8.0"
+VERSION="1.0.0"
 FILES="orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tetris orbis-doctor orbis-keyboard orbis-time orbis-jobs orbis-web"
 mkdir -p /opt /var/log /usr/local/bin "$BACKUP_DIR"; mount -o remount,rw / 2>/dev/null || true
 log(){ printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true; }
 repair_apk(){ mkdir -p /etc/apk; [ -f /etc/apk/repositories ] || : > /etc/apk/repositories; grep -Eq '^[^#].*/v3\.24/main([[:space:]]*)$' /etc/apk/repositories 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> /etc/apk/repositories; grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' /etc/apk/repositories 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> /etc/apk/repositories; if [ -f /etc/apk/world ]; then awk '{line=$0;gsub(/^[[:space:]]+|[[:space:]]+$/, "", line);if(line=="linux-firmware-iwlwifi"||line=="linux-firmware-rtlwifi")next;print $0}' /etc/apk/world >/tmp/orbis-world.clean; cat /tmp/orbis-world.clean >/etc/apk/world; fi; apk update; }
-ensure_git(){ command -v git >/dev/null 2>&1 && return 0; repair_apk; apk add --force-broken-world git ca-certificates; update-ca-certificates 2>/dev/null || true; }
+ensure_git(){ command -v git >/dev/null 2>&1 && return 0; repair_apk; apk add --force-broken-world git ca-certificates; update-ca-certificates 2>/dev/null || true; command -v git >/dev/null 2>&1; }
 ensure_clock(){ year="$(date +%Y 2>/dev/null || printf 0)"; [ "$year" -ge 2024 ] 2>/dev/null && return 0; printf '%s\n' 'Relógio incorreto detectado. Sincronizando antes do Git...'; if [ -x /usr/local/bin/orbis-time ]; then /usr/local/bin/orbis-time; elif command -v ntpd >/dev/null 2>&1; then ntpd -q -n -p pool.ntp.org >/tmp/orbis-time.log 2>&1; else return 1; fi; }
 backup_current(){ rm -rf "$BACKUP_DIR/current"; mkdir -p "$BACKUP_DIR/current/bin"; for file in $FILES; do [ -f "/usr/local/bin/$file" ] && cp -p "/usr/local/bin/$file" "$BACKUP_DIR/current/bin/$file"; done; [ -f "$RELEASE_FILE" ] && cp -p "$RELEASE_FILE" "$BACKUP_DIR/current/orbis-release"; }
-restore_backup(){ printf '%s\n' 'Falha detectada. Restaurando versão anterior...'; if [ -d "$BACKUP_DIR/current/bin" ]; then for file in "$BACKUP_DIR/current/bin"/*; do [ -f "$file" ] && install -m 0755 "$file" "/usr/local/bin/${file##*/}"; done; fi; [ -f "$BACKUP_DIR/current/orbis-release" ] && cp "$BACKUP_DIR/current/orbis-release" "$RELEASE_FILE"; sync; log 'Atualização falhou; backup restaurado.'; }
+restore_backup(){ printf '%s\n' 'Falha detectada. Restaurando versão anterior...'; if [ -d "$BACKUP_DIR/current/bin" ]; then for file in "$BACKUP_DIR/current/bin"/*; do [ -f "$file" ] && install -m 0755 "$file" "/usr/local/bin/${file##*/}"; done; fi; [ -f "$BACKUP_DIR/current/orbis-release" ] && cp -p "$BACKUP_DIR/current/orbis-release" "$RELEASE_FILE"; sync; log 'Atualização falhou; backup restaurado.'; }
 trap 'restore_backup' INT TERM HUP
 printf '%s\n' 'ORBIS OS  •  ATUALIZAÇÃO SEGURA' '─────────────────────────────────────────────'
 ping -c 1 -W 5 github.com >/dev/null 2>&1 || { printf '%s\n' 'Sem acesso ao GitHub. Confira o Wi-Fi.'; exit 1; }
 ensure_clock; ensure_git; backup_current
 if [ -d "$CHECKOUT/.git" ]; then git -C "$CHECKOUT" fetch origin "$BRANCH"; git -C "$CHECKOUT" reset --hard "origin/$BRANCH"; else rm -rf "$CHECKOUT"; git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$CHECKOUT"; fi
 [ -d "$CORE" ] || { restore_backup; exit 1; }
+# Lê a lista e a versão do atualizador recém-baixado. Assim novos componentes entram na mesma execução.
+NEW_UPDATER="$CORE/orbis-update"
+if [ -f "$NEW_UPDATER" ]; then
+  NEW_VERSION="$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$NEW_UPDATER" | head -n1)"
+  NEW_FILES="$(sed -n 's/^FILES="\([^"]*\)"/\1/p' "$NEW_UPDATER" | head -n1)"
+  [ -n "$NEW_VERSION" ] && VERSION="$NEW_VERSION"
+  [ -n "$NEW_FILES" ] && FILES="$NEW_FILES"
+fi
 for file in $FILES; do [ -f "$CORE/$file" ] || { restore_backup; printf 'Arquivo ausente: %s\n' "$file"; exit 1; }; done
 for file in $FILES; do install -m 0755 "$CORE/$file" "/usr/local/bin/$file"; done
-for file in $FILES; do [ -x "/usr/local/bin/$file" ] || { restore_backup; exit 1; }; done
+for file in $FILES; do [ -x "/usr/local/bin/$file" ] || { restore_backup; printf 'Falha ao validar: %s\n' "$file"; exit 1; }; done
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"; SHORT="$(git -C "$CHECKOUT" rev-parse --short HEAD)"
 cat > "$RELEASE_FILE" <<EOF
 ORBIS_VERSION=$VERSION
