@@ -1,0 +1,59 @@
+#!/bin/sh
+set -eu
+
+SERVER="/usr/local/bin/orbis-link-server"
+PIDFILE="/run/orbis-link.pid"
+LOGFILE="/var/log/orbis-link.log"
+PAIRFILE="/etc/orbis-link/pair-code"
+
+mkdir -p /run /var/log /etc/orbis-link
+
+case "${1:-status}" in
+  start)
+    [ -x "$SERVER" ] || { echo "Servidor Orbis Link não instalado."; exit 1; }
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+      echo "Orbis Link já está ativo."
+    else
+      nohup "$SERVER" >>"$LOGFILE" 2>&1 &
+      echo $! > "$PIDFILE"
+      sleep 1
+      echo "Orbis Link iniciado."
+    fi
+    ;;
+  stop)
+    if [ -f "$PIDFILE" ]; then
+      kill "$(cat "$PIDFILE")" 2>/dev/null || true
+      rm -f "$PIDFILE"
+    fi
+    echo "Orbis Link parado."
+    ;;
+  restart)
+    "$0" stop
+    "$0" start
+    ;;
+  pair)
+    "$0" start >/dev/null
+    IP="$(ip -4 -o addr show scope global 2>/dev/null | awk 'NR==1 {print $4}' | cut -d/ -f1)"
+    CODE="$(cat "$PAIRFILE" 2>/dev/null || echo indisponível)"
+    echo "============================================="
+    echo "                 ORBIS LINK"
+    echo "============================================="
+    echo "Endereço: http://${IP:-sem-ip}:8765"
+    echo "Código:   $CODE"
+    echo
+    echo "No app, informe o endereço e o código acima."
+    ;;
+  status)
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+      echo "Orbis Link: ativo"
+      "$0" pair
+    else
+      echo "Orbis Link: parado"
+      echo "Use: orbis-link start"
+    fi
+    ;;
+  *)
+    echo "Uso: orbis-link {start|stop|restart|status|pair}"
+    exit 1
+    ;;
+esac
