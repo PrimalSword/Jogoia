@@ -43,10 +43,17 @@ class SignalStore:
                     exit_price REAL,
                     closed_at TEXT,
                     result_pips REAL,
-                    outcome TEXT CHECK (outcome IN ('WIN', 'LOSS', 'BREAKEVEN') OR outcome IS NULL)
+                    outcome TEXT CHECK (outcome IN ('WIN', 'LOSS', 'BREAKEVEN') OR outcome IS NULL),
+                    bars_held INTEGER,
+                    ambiguous INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(signals)")}
+            if "bars_held" not in columns:
+                connection.execute("ALTER TABLE signals ADD COLUMN bars_held INTEGER")
+            if "ambiguous" not in columns:
+                connection.execute("ALTER TABLE signals ADD COLUMN ambiguous INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC)"
             )
@@ -65,25 +72,35 @@ class SignalStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    str(signal["symbol"]),
-                    int(signal["timeframe_minutes"]),
-                    str(signal["side"]),
-                    float(signal["entry"]),
-                    float(signal["stop"]),
-                    float(signal["target"]),
-                    float(signal["risk_reward"]),
-                    int(signal["confidence"]),
-                    str(signal["created_at"]),
-                    json.dumps(reasons, ensure_ascii=False),
-                    str(signal.get("mode", "paper")),
+                    str(signal["symbol"]), int(signal["timeframe_minutes"]),
+                    str(signal["side"]), float(signal["entry"]), float(signal["stop"]),
+                    float(signal["target"]), float(signal["risk_reward"]),
+                    int(signal["confidence"]), str(signal["created_at"]),
+                    json.dumps(reasons, ensure_ascii=False), str(signal.get("mode", "paper")),
                 ),
             )
             signal_id = int(cursor.lastrowid)
         stored = dict(signal)
-        stored["id"] = signal_id
-        stored["status"] = "OPEN"
-        stored["outcome"] = None
+        stored.update({"id": signal_id, "status": "OPEN", "outcome": None})
         return stored
+
+    def close_signal(self, signal_id: int, evaluation: Any) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE signals
+                SET status='CLOSED', outcome=?, exit_price=?, closed_at=?,
+                    result_pips=?, bars_held=?, ambiguous=?
+                WHERE id=? AND status='OPEN'
+                """,
+                (
+                    evaluation.outcome, evaluation.exit_price, evaluation.closed_at,
+                    evaluation.result_pips, evaluation.bars_held,
+                    1 if evaluation.ambiguous else 0, int(signal_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"sinal #{signal_id} inexistente ou já fechado")
 
     def list_signals(self, limit: int = 50) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 500))
@@ -95,33 +112,39 @@ class SignalStore:
 
     def summary(self) -> dict[str, Any]:
         with self._connect() as connection:
-            total = connection.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
-            open_count = connection.execute(
-                "SELECT COUNT(*) FROM signals WHERE status = 'OPEN'"
-            ).fetchone()[0]
-            outcomes = connection.execute(
+            aggregate = connection.execute(
                 """
-                SELECT outcome, COUNT(*) AS quantity
+                SELECT COUNT(*) total,
+                       SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) open_count,
+                       SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) wins,
+                       SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) losses,
+                       SUM(CASE WHEN outcome='BREAKEVEN' THEN 1 ELSE 0 END) breakeven,
+                       SUM(CASE WHEN ambiguous=1 THEN 1 ELSE 0 END) ambiguous,
+                       COALESCE(SUM(result_pips), 0) net_pips,
+                       AVG(CASE WHEN status='CLOSED' THEN bars_held END) avg_bars
                 FROM signals
-                WHERE outcome IS NOT NULL
-                GROUP BY outcome
                 """
-            ).fetchall()
-        by_outcome = {row["outcome"]: row["quantity"] for row in outcomes}
-        closed = sum(by_outcome.values())
-        wins = int(by_outcome.get("WIN", 0))
+            ).fetchone()
+        wins = int(aggregate["wins"] or 0)
+        losses = int(aggregate["losses"] or 0)
+        breakeven = int(aggregate["breakeven"] or 0)
+        closed = wins + losses + breakeven
         return {
-            "total": int(total),
-            "open": int(open_count),
-            "closed": int(closed),
+            "total": int(aggregate["total"] or 0),
+            "open": int(aggregate["open_count"] or 0),
+            "closed": closed,
             "wins": wins,
-            "losses": int(by_outcome.get("LOSS", 0)),
-            "breakeven": int(by_outcome.get("BREAKEVEN", 0)),
+            "losses": losses,
+            "breakeven": breakeven,
+            "ambiguous": int(aggregate["ambiguous"] or 0),
             "win_rate": round((wins / closed) * 100, 2) if closed else None,
+            "net_pips": round(float(aggregate["net_pips"] or 0), 2),
+            "average_bars_held": round(float(aggregate["avg_bars"]), 2) if aggregate["avg_bars"] is not None else None,
         }
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         data["reasons"] = json.loads(data.pop("reasons_json"))
+        data["ambiguous"] = bool(data.get("ambiguous", 0))
         return data
