@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Orbis Link local control server.
+
+Runs only on the local network and exposes a deliberately small, authenticated
+API for the Android companion app. It does not expose an arbitrary shell.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import subprocess
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+
+HOST = "0.0.0.0"
+PORT = int(os.environ.get("ORBIS_LINK_PORT", "8765"))
+CONFIG_DIR = Path("/etc/orbis-link")
+TOKEN_FILE = CONFIG_DIR / "token"
+PAIR_FILE = CONFIG_DIR / "pair-code"
+LOG_FILE = Path("/var/log/orbis.log")
+RELEASE_FILE = Path("/etc/orbis-release")
+
+
+def run(command: list[str], timeout: int = 10) -> str:
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return (completed.stdout or completed.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def ensure_credentials() -> tuple[str, str]:
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    if not TOKEN_FILE.exists():
+        TOKEN_FILE.write_text(secrets.token_urlsafe(32), encoding="utf-8")
+        TOKEN_FILE.chmod(0o600)
+
+    if not PAIR_FILE.exists():
+        PAIR_FILE.write_text(f"{secrets.randbelow(1_000_000):06d}", encoding="utf-8")
+        PAIR_FILE.chmod(0o600)
+
+    return (
+        TOKEN_FILE.read_text(encoding="utf-8").strip(),
+        PAIR_FILE.read_text(encoding="utf-8").strip(),
+    )
+
+
+def release_info() -> dict[str, str]:
+    result: dict[str, str] = {"version": "desconhecida", "commit": "desconhecido"}
+    if not RELEASE_FILE.exists():
+        return result
+
+    for raw_line in RELEASE_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
+        key, separator, value = raw_line.partition("=")
+        if not separator:
+            continue
+        if key == "ORBIS_VERSION":
+            result["version"] = value
+        elif key == "ORBIS_COMMIT":
+            result["commit"] = value[:8]
+    return result
+
+
+def status_payload() -> dict[str, Any]:
+    mem_total = 0
+    mem_available = 0
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                mem_total = int(line.split()[1])
+            elif line.startswith("MemAvailable:"):
+                mem_available = int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+
+    wifi_link = run(["iw", "dev", "wlan0", "link"])
+    ssid = "desconectada"
+    signal = "indisponível"
+    for line in wifi_link.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("SSID:"):
+            ssid = stripped.partition(":")[2].strip()
+        elif stripped.startswith("signal:"):
+            signal = stripped.partition(":")[2].strip()
+
+    ip_address = run(["sh", "-c", "ip -4 -o addr show scope global | awk 'NR==1 {print $4}'"])
+    uptime_seconds = int(float(Path("/proc/uptime").read_text().split()[0])) if Path("/proc/uptime").exists() else 0
+    release = release_info()
+
+    return {
+        "name": "Orbis OS",
+        "hostname": run(["hostname"]) or "orbis",
+        "version": release["version"],
+        "commit": release["commit"],
+        "ip": ip_address or "desconectado",
+        "wifi": {"ssid": ssid, "signal": signal},
+        "memory": {
+            "total_mb": round(mem_total / 1024),
+            "used_mb": round((mem_total - mem_available) / 1024),
+        },
+        "uptime_seconds": uptime_seconds,
+        "timestamp": int(time.time()),
+    }
+
+
+TOKEN, PAIR_CODE = ensure_credentials()
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "OrbisLink/0.1"
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+    def send_json(self, status: int, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def authenticated(self) -> bool:
+        supplied = self.headers.get("X-Orbis-Token", "")
+        return bool(supplied) and hmac.compare_digest(supplied, TOKEN)
+
+    def read_json(self) -> dict[str, Any]:
+        try:
+            length = min(int(self.headers.get("Content-Length", "0")), 8192)
+            raw = self.rfile.read(length)
+            return json.loads(raw.decode("utf-8")) if raw else {}
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/api/v1/ping":
+            self.send_json(200, {"ok": True, "service": "orbis-link"})
+            return
+
+        if self.path == "/api/v1/status":
+            if not self.authenticated():
+                self.send_json(401, {"error": "não autorizado"})
+                return
+            self.send_json(200, status_payload())
+            return
+
+        if self.path == "/api/v1/logs":
+            if not self.authenticated():
+                self.send_json(401, {"error": "não autorizado"})
+                return
+            lines = []
+            if LOG_FILE.exists():
+                lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-120:]
+            self.send_json(200, {"lines": lines})
+            return
+
+        self.send_json(404, {"error": "rota não encontrada"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        body = self.read_json()
+
+        if self.path == "/api/v1/pair":
+            code = str(body.get("code", ""))
+            if not hmac.compare_digest(code, PAIR_CODE):
+                self.send_json(403, {"error": "código de pareamento inválido"})
+                return
+            self.send_json(200, {"token": TOKEN, "device": status_payload()})
+            return
+
+        if not self.authenticated():
+            self.send_json(401, {"error": "não autorizado"})
+            return
+
+        actions: dict[str, list[str]] = {
+            "/api/v1/actions/update": ["/usr/local/bin/orbis-update"],
+            "/api/v1/actions/doctor": ["/usr/local/bin/orbis-doctor"],
+            "/api/v1/actions/reboot": ["/sbin/reboot"],
+            "/api/v1/actions/shutdown": ["/sbin/poweroff"],
+        }
+        command = actions.get(self.path)
+        if command is None:
+            self.send_json(404, {"error": "ação não encontrada"})
+            return
+
+        if self.path in {"/api/v1/actions/reboot", "/api/v1/actions/shutdown"}:
+            if body.get("confirm") is not True:
+                self.send_json(400, {"error": "confirmação obrigatória"})
+                return
+            self.send_json(202, {"accepted": True})
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+
+        output = run(command, timeout=120)
+        self.send_json(200, {"ok": True, "output": output[-12000:]})
+
+
+def main() -> None:
+    print(f"Orbis Link ativo em http://{HOST}:{PORT}")
+    print(f"Código de pareamento: {PAIR_CODE}")
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
