@@ -1,8 +1,9 @@
 #!/bin/sh
 
-DEFAULT_VERSION="0.2.3"
+DEFAULT_VERSION="0.2.4"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
+BIN_DIR="/usr/local/bin"
 
 if [ -f /etc/orbis-release ]; then
   . /etc/orbis-release
@@ -33,6 +34,18 @@ show_status() {
   printf '%s\n\n' '============================================='
 }
 
+run_orbis_command() {
+  command_name="$1"
+  command_path="$BIN_DIR/$command_name"
+
+  if [ ! -x "$command_path" ]; then
+    printf 'Componente indisponível ou sem permissão: %s\n' "$command_path"
+    return 1
+  fi
+
+  "$command_path"
+}
+
 show_status
 [ "${1:-}" = "--status" ] && exit 0
 
@@ -49,10 +62,10 @@ while :; do
   read -r choice
 
   case "$choice" in
-    1) orbis-wifi; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    2) orbis-install; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    3) orbis-update; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
-    4) orbis-log; show_status ;;
+    1) run_orbis_command orbis-wifi; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
+    2) run_orbis_command orbis-install; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
+    3) run_orbis_command orbis-update; printf '\nPressione Enter para voltar...'; read -r _; show_status ;;
+    4) run_orbis_command orbis-log; show_status ;;
     5) show_status ;;
     6) reboot ;;
     7) poweroff ;;
