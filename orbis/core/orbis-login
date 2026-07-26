@@ -71,9 +71,15 @@ auto_connect_wifi() {
   [ -n "$IP" ] && log "Wi-Fi automático conectado: interface=$WIFI_IFACE ssid=${SSID:-desconhecida} ip=$IP" || log "Wi-Fi automático sem IP: interface=$WIFI_IFACE"
 }
 
+sync_clock() {
+  [ -x /usr/local/bin/orbis-time ] || return 0
+  /usr/local/bin/orbis-time --quiet || true
+}
+
 log "OrbisOS iniciou em $(uname -r)"
 apply_saved_keyboard
 auto_connect_wifi
+sync_clock
 
 if [ -x /usr/local/bin/orbis ]; then /usr/local/bin/orbis; fi
 exec /bin/ash -l
