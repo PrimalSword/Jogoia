@@ -17,11 +17,27 @@ listener_active() {
   netstat -ltn 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}'
 }
 
+core_pids() {
+  ps 2>/dev/null | awk -v core="$CORE" '$0 ~ /python3/ && index($0, core) {print $1}'
+}
+
+recover_pidfile() {
+  for pid in $(core_pids); do
+    if kill -0 "$pid" 2>/dev/null; then
+      printf '%s\n' "$pid" > "$PIDFILE"
+      return 0
+    fi
+  done
+  return 1
+}
+
 start() {
-  if pid_alive && listener_active; then
+  if listener_active; then
+    pid_alive || recover_pidfile || true
     printf 'Orbis Core já está ativo na porta %s.\n' "$PORT"
     return 0
   fi
+
   stop >/dev/null 2>&1 || true
   command -v python3 >/dev/null 2>&1 || {
     printf '%s\n' 'Python 3 não está instalado. Execute “Atualizar pelo Git”.'
@@ -31,29 +47,41 @@ start() {
     printf 'Núcleo ausente: %s\n' "$CORE"
     return 1
   }
+
+  : > "$LOGFILE"
   ORBIS_WEB_PORT="$PORT" python3 "$CORE" >>"$LOGFILE" 2>&1 &
   echo $! > "$PIDFILE"
   sleep 2
-  if ! pid_alive || ! listener_active; then
+
+  if ! listener_active; then
     printf 'Falha ao iniciar. Últimas mensagens:\n'
     tail -n 20 "$LOGFILE" 2>/dev/null || true
     stop >/dev/null 2>&1 || true
     return 1
   fi
+
+  pid_alive || recover_pidfile || true
   ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
   printf 'Orbis Core iniciado: http://%s:%s\n' "${ip:-127.0.0.1}" "$PORT"
 }
 
 stop() {
-  if pid_alive; then kill "$(cat "$PIDFILE")" 2>/dev/null || true; sleep 1; fi
+  if pid_alive; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  fi
+  for pid in $(core_pids); do
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 1
   rm -f "$PIDFILE"
   printf '%s\n' 'Orbis Core parado.'
 }
 
 status() {
-  if pid_alive && listener_active; then
+  if listener_active; then
+    pid_alive || recover_pidfile || true
     printf 'ATIVO porta %s\n' "$PORT"
-    printf 'PID: %s\n' "$(cat "$PIDFILE")"
+    printf 'PID: %s\n' "$(cat "$PIDFILE" 2>/dev/null || printf '-')"
   else
     printf '%s\n' 'INATIVO'
     printf 'PID: %s\n' "$(cat "$PIDFILE" 2>/dev/null || printf '-')"
