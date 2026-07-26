@@ -7,8 +7,9 @@ CHECKOUT="/opt/orbis-src"
 CORE="$CHECKOUT/orbis/core"
 RELEASE_FILE="/etc/orbis-release"
 LOGFILE="/var/log/orbis.log"
+VERSION="0.2.4"
 
-mkdir -p /opt /var/log
+mkdir -p /opt /var/log /usr/local/bin
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE"
 }
@@ -19,7 +20,7 @@ printf '%s\n' '============================================='
 command -v git >/dev/null 2>&1 || {
   printf '%s\n' 'Git não está instalado. Tentando instalar...'
   apk update
-  apk add git ca-certificates
+  apk add --force-broken-world git ca-certificates
   update-ca-certificates 2>/dev/null || true
 }
 
@@ -40,7 +41,7 @@ fi
 
 [ -d "$CORE" ] || { printf '%s\n' 'Estrutura orbis/core não encontrada.'; exit 1; }
 
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login; do
   [ -f "$CORE/$file" ] || { printf 'Arquivo ausente: %s\n' "$file"; exit 1; }
   install -m 0755 "$CORE/$file" "/usr/local/bin/$file"
 done
@@ -48,7 +49,7 @@ done
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
 SHORT="$(git -C "$CHECKOUT" rev-parse --short HEAD)"
 cat > "$RELEASE_FILE" <<EOF
-ORBIS_VERSION=0.2.2
+ORBIS_VERSION=$VERSION
 ORBIS_BRANCH=$BRANCH
 ORBIS_COMMIT=$COMMIT
 ORBIS_REPOSITORY=$REPO_URL
@@ -58,4 +59,4 @@ EOF
 log "Orbis atualizado pelo Git para $COMMIT"
 printf '\nOrbis atualizado com sucesso.\n'
 printf 'Commit instalado: %s\n' "$SHORT"
-printf '%s\n' 'Não é necessário gerar outra ISO para alterações nos scripts.'
+printf '%s\n' 'Os componentes principais e o login foram validados.'
