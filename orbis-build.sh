@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 ALPINE_VERSION="3.24.1"
 ARCH="x86_64"
 FLAVOR="extended"
@@ -13,6 +13,8 @@ BASE_SHA="${BASE_ISO}.sha256"
 APKOVL="${WORKDIR}/orbis.apkovl.tar.gz"
 BASE_URL="https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/${ARCH}"
 CORE_DIR="${PWD}/orbis/core"
+BUILD_COMMIT="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || printf unknown)}"
+BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 for command in curl xorriso tar sha256sum install; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -56,6 +58,14 @@ printf 'orbis\n' > "$WORKDIR/overlay/etc/hostname"
 : > "$WORKDIR/overlay/etc/motd"
 printf 'OrbisOS %s iniciado.\n' "$VERSION" > "$WORKDIR/overlay/var/log/orbis.log"
 
+cat > "$WORKDIR/overlay/etc/orbis-release" <<EOF
+ORBIS_VERSION=$VERSION
+ORBIS_BRANCH=main
+ORBIS_COMMIT=$BUILD_COMMIT
+ORBIS_REPOSITORY=https://github.com/PrimalSword/Jogoia.git
+BUILD_DATE=$BUILD_DATE
+EOF
+
 cat > "$WORKDIR/overlay/etc/hosts" <<'EOF'
 127.0.0.1 localhost
 127.0.1.1 orbis
@@ -89,6 +99,7 @@ wpa_supplicant
 wpa_supplicant-openrc
 dhcpcd
 curl
+ca-certificates
 git
 openssh
 python3
