@@ -1,0 +1,67 @@
+#!/bin/sh
+set -u
+
+LOGFILE="/var/log/orbis.log"
+mkdir -p /var/log
+
+ok() { printf 'OK'; }
+fail() { printf 'FALHA'; }
+warn() { printf 'ATENÇÃO'; }
+line() { printf '%-19s %s\n' "$1" "$2"; }
+
+find_wifi_iface() {
+  WIFI_IFACE=""
+  for path in /sys/class/net/*; do
+    [ -e "$path" ] || continue
+    iface="${path##*/}"
+    case "$iface" in wlan*|wlp*) WIFI_IFACE="$iface"; return 0 ;; esac
+  done
+  return 1
+}
+
+printf '%s\n' '============================================='
+printf '%s\n' '              ORBIS DOCTOR'
+printf '%s\n' '============================================='
+
+line 'CPU' "$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null || uname -m)"
+line 'Memória' "$(awk '/MemTotal/ {printf "%d MB", $2/1024}' /proc/meminfo 2>/dev/null || printf indisponível)"
+
+ROOT_STATE="$(mount | awk '$3 == "/" {print $6; exit}')"
+case "$ROOT_STATE" in *rw*) line 'Sistema de arquivos' "$(ok) (leitura e escrita)" ;; *) line 'Sistema de arquivos' "$(warn) (somente leitura)" ;; esac
+
+if command -v modprobe >/dev/null 2>&1; then
+  modprobe ath9k 2>/dev/null || true
+fi
+command -v rfkill >/dev/null 2>&1 && rfkill unblock all 2>/dev/null || true
+sleep 1
+
+if find_wifi_iface; then
+  line 'Interface Wi-Fi' "$(ok) ($WIFI_IFACE)"
+  DRIVER="$(readlink -f "/sys/class/net/$WIFI_IFACE/device/driver" 2>/dev/null | awk -F/ '{print $NF}')"
+  line 'Driver Wi-Fi' "${DRIVER:-desconhecido}"
+  LINK="$(iw dev "$WIFI_IFACE" link 2>/dev/null || true)"
+  SSID="$(printf '%s\n' "$LINK" | awk -F': ' '/SSID:/ {print $2; exit}')"
+  IP="$(ip -4 -o addr show dev "$WIFI_IFACE" scope global 2>/dev/null | awk '{print $4}' | head -n1)"
+  line 'Rede Wi-Fi' "${SSID:-desconectada}"
+  line 'Endereço IP' "${IP:-indisponível}"
+else
+  line 'Interface Wi-Fi' "$(fail)"
+fi
+
+if ping -c 1 -W 3 github.com >/dev/null 2>&1; then line 'Internet' "$(ok)"; else line 'Internet' "$(fail)"; fi
+if command -v git >/dev/null 2>&1; then line 'Git' "$(git --version 2>/dev/null)"; else line 'Git' "$(fail)"; fi
+
+REPOS="$(grep -Ev '^[[:space:]]*(#|$)' /etc/apk/repositories 2>/dev/null | wc -l | tr -d ' ')"
+if [ "${REPOS:-0}" -gt 0 ]; then line 'Repositórios APK' "$(ok) ($REPOS ativos)"; else line 'Repositórios APK' "$(fail)"; fi
+
+for file in orbis orbis-wifi orbis-update orbis-log orbis-login orbis-tetris orbis-keyboard; do
+  if [ -x "/usr/local/bin/$file" ]; then
+    :
+  else
+    line "Componente $file" "$(fail)"
+  fi
+done
+
+printf '%s\n' '============================================='
+printf '%s\n' 'Diagnóstico concluído.'
+printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" 'Orbis Doctor executado.' >> "$LOGFILE" 2>/dev/null || true
