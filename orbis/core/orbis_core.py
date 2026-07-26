@@ -19,6 +19,11 @@ JOBS_DIR = Path("/var/lib/orbis/jobs")
 STARTED_AT = time.time()
 
 
+class OrbisHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 def read_text(path: Path, default: str = "") -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace").strip()
@@ -34,7 +39,7 @@ def run(*args: str) -> str:
 
 
 def release_info() -> dict[str, str]:
-    data = {"version": "2.0.0", "commit": "desconhecido"}
+    data = {"version": "2.0.1", "commit": "desconhecido"}
     for line in read_text(RELEASE_FILE).splitlines():
         if "=" not in line:
             continue
@@ -148,7 +153,7 @@ def dashboard(payload: dict[str, Any]) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "OrbisCore/2.0"
+    server_version = "OrbisCore/2.0.1"
 
     def log_message(self, fmt: str, *args: object) -> None:
         print(f"{self.address_string()} - {fmt % args}", flush=True)
@@ -174,8 +179,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    server.daemon_threads = True
+    server = OrbisHTTPServer((HOST, PORT), Handler)
 
     def shutdown(_signum: int, _frame: object) -> None:
         server.shutdown()
