@@ -1,0 +1,8 @@
+#!/bin/sh
+hostname orbis 2>/dev/null || true
+mkdir -p /var/log
+printf '%s OrbisOS iniciou em %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf boot)" "$(uname -r)" >> /var/log/orbis.log
+if [ -x /usr/local/bin/orbis ]; then
+  /usr/local/bin/orbis
+fi
+exec /bin/ash -l
