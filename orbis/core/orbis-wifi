@@ -1,75 +1,135 @@
 #!/bin/sh
-set -eu
+set -u
 
 LOGFILE="/var/log/orbis.log"
 CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
-mkdir -p /var/log /etc/wpa_supplicant
+TMP_CONF="/tmp/orbis-wpa.$$.conf"
+mkdir -p /var/log /etc/wpa_supplicant /run
+
+cleanup() {
+  stty echo 2>/dev/null || true
+  rm -f "$TMP_CONF"
+}
+interrupt() {
+  cleanup
+  printf '\nConfiguração cancelada. Voltando ao menu.\n'
+  exit 130
+}
+trap cleanup EXIT
+trap interrupt INT TERM HUP
 
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE"
 }
 
+find_wifi_iface() {
+  WIFI_IFACE=""
+  count=0
+  while [ "$count" -lt 10 ]; do
+    for path in /sys/class/net/*; do
+      [ -e "$path" ] || continue
+      iface="${path##*/}"
+      case "$iface" in
+        wlan*|wlp*) WIFI_IFACE="$iface"; return 0 ;;
+      esac
+    done
+    count=$((count + 1))
+    sleep 1
+  done
+  return 1
+}
+
 printf '%s\n' 'ORBIS OS - CONFIGURAÇÃO DE WI-FI'
 printf '%s\n' '============================================='
+printf '%s\n' 'Ctrl+C cancela e volta ao menu.'
 
 command -v modprobe >/dev/null 2>&1 && modprobe ath9k 2>/dev/null || true
 command -v rfkill >/dev/null 2>&1 && rfkill unblock all 2>/dev/null || true
 
-WIFI_IFACE=""
-for path in /sys/class/net/*; do
-  [ -e "$path" ] || continue
-  iface="${path##*/}"
-  case "$iface" in
-    wlan*|wlp*) WIFI_IFACE="$iface"; break ;;
-  esac
-done
-
-if [ -z "$WIFI_IFACE" ]; then
-  printf '%s\n' 'Nenhuma interface Wi-Fi foi reconhecida.'
-  printf '%s\n' 'Interfaces existentes:'
-  for path in /sys/class/net/*; do [ -e "$path" ] && printf ' - %s\n' "${path##*/}"; done
+if ! find_wifi_iface; then
+  printf '%s\n' 'Nenhuma interface Wi-Fi foi reconhecida após 10 segundos.'
   log 'Falha: nenhuma interface Wi-Fi encontrada.'
   exit 1
 fi
 
-ifconfig "$WIFI_IFACE" up 2>/dev/null || ip link set "$WIFI_IFACE" up
+ifconfig "$WIFI_IFACE" up 2>/dev/null || ip link set "$WIFI_IFACE" up 2>/dev/null || true
 printf 'Interface encontrada: %s\n\n' "$WIFI_IFACE"
 
 printf '%s\n' 'Redes próximas:'
 iwlist "$WIFI_IFACE" scan 2>/dev/null | awk -F'"' '/ESSID:/ && $2 != "" {print $2}' | awk '!seen[$0]++' | nl -w2 -s' - ' || true
 
-printf '\nDigite exatamente o nome da rede (SSID): '
-read -r SSID
-[ -n "$SSID" ] || { printf '%s\n' 'Nome da rede vazio.'; exit 1; }
+printf '\nDigite exatamente o nome da rede (SSID), ou 0 para cancelar: '
+IFS= read -r SSID || exit 0
+[ "$SSID" = "0" ] && exit 0
+[ -n "$SSID" ] || { printf '%s\n' 'Nome da rede vazio. Operação cancelada.'; exit 1; }
 
 printf 'Digite a senha da rede: '
 stty -echo 2>/dev/null || true
-read -r PASSWORD
+IFS= read -r PASSWORD || { stty echo 2>/dev/null || true; exit 0; }
 stty echo 2>/dev/null || true
 printf '\n'
-[ -n "$PASSWORD" ] || { printf '%s\n' 'Senha vazia.'; exit 1; }
+[ -n "$PASSWORD" ] || { printf '%s\n' 'Senha vazia. Operação cancelada.'; exit 1; }
 
 command -v wpa_passphrase >/dev/null 2>&1 || {
   printf '%s\n' 'wpa_passphrase não está disponível.'
   exit 1
 }
 
-wpa_passphrase "$SSID" "$PASSWORD" > "$CONF"
-chmod 600 "$CONF"
+wpa_passphrase "$SSID" "$PASSWORD" > "$TMP_CONF"
+chmod 600 "$TMP_CONF"
+unset PASSWORD
 
 killall wpa_supplicant 2>/dev/null || true
-wpa_supplicant -B -i "$WIFI_IFACE" -c "$CONF"
-sleep 3
-udhcpc -i "$WIFI_IFACE" -q -t 8
+rm -f /run/orbis-wpa.pid
 
-IP="$(ip -4 -o addr show dev "$WIFI_IFACE" 2>/dev/null | awk '{print $4}' | head -n1)"
+if ! wpa_supplicant -B -P /run/orbis-wpa.pid -i "$WIFI_IFACE" -c "$TMP_CONF" >/dev/null 2>&1; then
+  printf '%s\n' 'Não foi possível iniciar a conexão Wi-Fi.'
+  log "Falha ao iniciar wpa_supplicant em $WIFI_IFACE para SSID $SSID."
+  exit 1
+fi
+
+printf '%s' 'Validando senha e conexão'
+connected=0
+count=0
+while [ "$count" -lt 15 ]; do
+  if iw dev "$WIFI_IFACE" link 2>/dev/null | grep -q '^Connected to '; then
+    connected=1
+    break
+  fi
+  printf '.'
+  count=$((count + 1))
+  sleep 1
+done
+printf '\n'
+
+if [ "$connected" -ne 1 ]; then
+  killall wpa_supplicant 2>/dev/null || true
+  printf '%s\n' 'Não foi possível autenticar. Confira o nome da rede e a senha.'
+  printf '%s\n' 'A configuração anterior, se existente, foi preservada.'
+  log "Falha de autenticação em $WIFI_IFACE para SSID $SSID."
+  exit 1
+fi
+
+if command -v timeout >/dev/null 2>&1; then
+  timeout 25 udhcpc -i "$WIFI_IFACE" -q -t 5 -T 3 >/dev/null 2>&1 || true
+else
+  udhcpc -i "$WIFI_IFACE" -q -t 5 -T 3 >/dev/null 2>&1 || true
+fi
+
+IP="$(ip -4 -o addr show dev "$WIFI_IFACE" scope global 2>/dev/null | awk '{print $4}' | head -n1)"
 if [ -z "$IP" ]; then
-  printf '%s\n' 'Não foi possível obter endereço IP.'
+  killall wpa_supplicant 2>/dev/null || true
+  printf '%s\n' 'A senha foi aceita, mas não foi possível obter endereço IP.'
+  printf '%s\n' 'A configuração anterior, se existente, foi preservada.'
   log "Falha de DHCP em $WIFI_IFACE para SSID $SSID."
   exit 1
 fi
 
-# Persistência para o próximo boot.
+# Só substitui a configuração persistente depois de autenticação e DHCP bem-sucedidos.
+mv "$TMP_CONF" "$CONF"
+chmod 600 "$CONF"
+trap - EXIT
+
 cat > /etc/network/interfaces <<EOF
 auto lo
 iface lo inet loopback
@@ -81,7 +141,7 @@ EOF
 rc-update add networking default >/dev/null 2>&1 || true
 rc-update add wpa_supplicant default >/dev/null 2>&1 || true
 
-printf '\nConectado com sucesso.\n'
+printf '\nConectado e salvo com sucesso.\n'
 printf 'Rede: %s\n' "$SSID"
 printf 'IP:   %s\n' "$IP"
-log "Wi-Fi conectado: interface=$WIFI_IFACE ssid=$SSID ip=$IP"
+log "Wi-Fi conectado e salvo: interface=$WIFI_IFACE ssid=$SSID ip=$IP"
