@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.2"
+VERSION="0.2.3"
 ALPINE_VERSION="3.24.1"
 ARCH="x86_64"
 FLAVOR="extended"
@@ -42,11 +42,9 @@ mkdir -p \
 rm -f "$OUTDIR"/orbisos-*.iso "$OUTDIR"/orbisos-*.iso.sha256
 
 printf 'Baixando Alpine Extended %s...\n' "$ALPINE_VERSION"
-curl --fail --location --retry 3 \
-  --output "$BASE_ISO" \
+curl --fail --location --retry 3 --output "$BASE_ISO" \
   "$BASE_URL/alpine-${FLAVOR}-${ALPINE_VERSION}-${ARCH}.iso"
-curl --fail --location --retry 3 \
-  --output "$BASE_SHA" \
+curl --fail --location --retry 3 --output "$BASE_SHA" \
   "$BASE_URL/alpine-${FLAVOR}-${ALPINE_VERSION}-${ARCH}.iso.sha256"
 
 (
@@ -76,6 +74,11 @@ auto lo
 iface lo inet loopback
 EOF
 
+cat > "$WORKDIR/overlay/etc/apk/repositories" <<'EOF'
+https://dl-cdn.alpinelinux.org/alpine/v3.24/main
+https://dl-cdn.alpinelinux.org/alpine/v3.24/community
+EOF
+
 cat > "$WORKDIR/overlay/etc/apk/world" <<'EOF'
 alpine-base
 alpine-conf
@@ -89,9 +92,7 @@ parted
 syslinux
 linux-lts
 linux-firmware-ath9k_htc
-linux-firmware-iwlwifi
 linux-firmware-realtek
-linux-firmware-rtlwifi
 linux-firmware-brcm
 iw
 wireless-tools
@@ -140,18 +141,12 @@ for file in orbis orbis-wifi orbis-install orbis-update orbis-log; do
 done
 chmod +x "$WORKDIR/overlay/usr/local/bin/orbis-login"
 
-tar --numeric-owner --owner=0 --group=0 \
-  -C "$WORKDIR/overlay" \
-  -czf "$APKOVL" .
+tar --numeric-owner --owner=0 --group=0 -C "$WORKDIR/overlay" -czf "$APKOVL" .
 
 printf 'Criando ISO OrbisOS %s...\n' "$VERSION"
-xorriso \
-  -indev "$BASE_ISO" \
-  -outdev "$OUTDIR/${IMAGE_NAME}.iso" \
-  -map "$APKOVL" /orbis.apkovl.tar.gz \
-  -boot_image any replay
+xorriso -indev "$BASE_ISO" -outdev "$OUTDIR/${IMAGE_NAME}.iso" \
+  -map "$APKOVL" /orbis.apkovl.tar.gz -boot_image any replay
 
 sha256sum "$OUTDIR/${IMAGE_NAME}.iso" > "$OUTDIR/${IMAGE_NAME}.iso.sha256"
-
 printf '\nImagem criada: %s\n' "$OUTDIR/${IMAGE_NAME}.iso"
 printf 'Checksum:      %s\n' "$OUTDIR/${IMAGE_NAME}.iso.sha256"
