@@ -9,7 +9,7 @@ LOGFILE="/var/log/orbis.log"
 BACKUP_DIR="/opt/orbis-backup"
 LIB_DIR="/usr/local/lib/orbis"
 RUNTIME_CORE="$LIB_DIR/orbis_core.py"
-VERSION="2.3.0"
+VERSION="2.4.0"
 
 mkdir -p /opt /var/log /usr/local/bin "$LIB_DIR" "$BACKUP_DIR"
 mount -o remount,rw / 2>/dev/null || true
@@ -98,5 +98,5 @@ if [ -x /usr/local/bin/orbis-web ]; then
 fi
 trap - INT TERM HUP
 log "Orbis atualizado com segurança para $COMMIT"
-printf '\nAtualização concluída.\nVersão instalada: %s\nCommit instalado: %s\nCore: saudável\nBoot: Tailscale removido do OpenRC e iniciado em segundo plano\n' "$VERSION" "$SHORT"
+printf '\nAtualização concluída.\nVersão instalada: %s\nCommit instalado: %s\nCore: saudável\nPainel: centro de operações remoto 2.4 ativo\nBoot: Tailscale não bloqueante\n' "$VERSION" "$SHORT"
 if [ -x /usr/local/bin/orbis-remote ]; then /usr/local/bin/orbis-remote --boot >/dev/null 2>&1 || true; fi
