@@ -9,7 +9,7 @@ LOGFILE="/var/log/orbis.log"
 BACKUP_DIR="/opt/orbis-backup"
 LIB_DIR="/usr/local/lib/orbis"
 RUNTIME_CORE="$LIB_DIR/orbis_core.py"
-VERSION="2.0.1"
+VERSION="2.1.0"
 
 mkdir -p /opt /var/log /usr/local/bin "$LIB_DIR" "$BACKUP_DIR"
 mount -o remount,rw / 2>/dev/null || true
@@ -86,6 +86,7 @@ if [ -x /usr/local/bin/orbis-web ]; then
   /usr/local/bin/orbis-web --start || { restore_backup; printf '%s\n' 'Atualização instalada, mas o Core não iniciou.'; exit 1; }
   health_check || { restore_backup; printf '%s\n' 'Core iniciou sem responder ao teste de saúde.'; exit 1; }
 fi
+[ -x /usr/local/bin/orbis-remote ] && /usr/local/bin/orbis-remote --boot >/dev/null 2>&1 || true
 trap - INT TERM HUP
 log "Orbis atualizado com segurança para $COMMIT"
 printf '\nAtualização concluída.\nVersão instalada: %s\nCommit instalado: %s\nCore: saudável\n' "$VERSION" "$SHORT"
