@@ -30,8 +30,7 @@ health_check() {
 import sys, urllib.request
 port = int(sys.argv[1])
 with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
-    if r.read().strip() != b"ok":
-        raise SystemExit(1)
+    if r.read().strip() != b"ok": raise SystemExit(1)
 PY
 }
 
@@ -54,31 +53,20 @@ stop() {
 
 start() {
   command -v python3 >/dev/null 2>&1 || { printf '%s\n' 'Python 3 não está instalado. Execute “Atualizar pelo Git”.'; return 1; }
-  if health_check; then
-    printf 'Orbis Core já está ativo na porta %s.\n' "$PORT"
-    return 0
-  fi
+  if health_check; then printf 'Orbis Core já está ativo na porta %s.\n' "$PORT"; return 0; fi
   stop >/dev/null 2>&1 || true
   auto_repair_core || { printf 'Núcleo ausente ou inválido: %s\n' "$CORE"; return 1; }
   : > "$LOGFILE"
   ORBIS_WEB_PORT="$PORT" python3 "$CORE" </dev/null >>"$LOGFILE" 2>&1 &
-  pid=$!
-  printf '%s\n' "$pid" > "$PIDFILE"
+  pid=$!; printf '%s\n' "$pid" > "$PIDFILE"
   count=0
-  while [ "$count" -lt 10 ]; do
-    health_check && break
-    kill -0 "$pid" 2>/dev/null || break
-    count=$((count + 1)); sleep 1
-  done
-  if ! health_check; then
-    printf '%s\n' 'Falha ao iniciar o Orbis Core. Diagnóstico:'
-    tail -n 30 "$LOGFILE" 2>/dev/null || true
-    stop >/dev/null 2>&1 || true
-    return 1
-  fi
+  while [ "$count" -lt 10 ]; do health_check && break; kill -0 "$pid" 2>/dev/null || break; count=$((count + 1)); sleep 1; done
+  if ! health_check; then printf '%s\n' 'Falha ao iniciar o Orbis Core. Diagnóstico:'; tail -n 30 "$LOGFILE" 2>/dev/null || true; stop >/dev/null 2>&1 || true; return 1; fi
   ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
   printf 'Orbis Core iniciado: http://%s:%s\n' "${ip:-127.0.0.1}" "$PORT"
 }
+
+restart() { stop >/dev/null 2>&1 || true; start; }
 
 status() {
   if health_check; then
@@ -98,13 +86,14 @@ status() {
 case "${1:-menu}" in
   --start|start) start ;;
   --stop|stop) stop ;;
+  --restart|restart) restart ;;
   --status|status) status ;;
   --boot) start >/dev/null 2>&1 || true ;;
   *)
     clear
-    printf 'ORBIS CORE / WEB\n─────────────────────────────────────────────\n1 Iniciar  2 Parar  3 Status/diagnóstico  0 Voltar\n web › '
+    printf 'ORBIS CORE / WEB\n─────────────────────────────────────────────\n1 Iniciar  2 Parar  3 Status/diagnóstico  4 Reiniciar  0 Voltar\n web › '
     read -r c
-    case "$c" in 1) start ;; 2) stop ;; 3) status ;; esac
+    case "$c" in 1) start ;; 2) stop ;; 3) status ;; 4) restart ;; esac
     printf '\nEnter...'; read -r _ || true
     ;;
 esac
