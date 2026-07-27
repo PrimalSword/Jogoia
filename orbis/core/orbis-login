@@ -23,11 +23,13 @@ auto_connect_wifi() {
 sync_clock() { [ -x /usr/local/bin/orbis-time ] && /usr/local/bin/orbis-time --quiet || true; }
 run_boot_automations() { [ -x /usr/local/bin/orbis-jobs ] && /usr/local/bin/orbis-jobs --boot >/dev/null 2>&1 || true; }
 start_web_dashboard() { [ -x /usr/local/bin/orbis-web ] && /usr/local/bin/orbis-web --boot >/dev/null 2>&1 || true; }
+start_remote_access() { [ -x /usr/local/bin/orbis-remote ] && /usr/local/bin/orbis-remote --boot >/dev/null 2>&1 || true; }
 
 log "OrbisOS iniciou em $(uname -r)"
 apply_saved_keyboard
 auto_connect_wifi
 sync_clock
+start_remote_access
 run_boot_automations
 start_web_dashboard
 if [ -x /usr/local/bin/orbis ]; then /usr/local/bin/orbis; fi
