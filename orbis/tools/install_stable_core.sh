@@ -5,7 +5,9 @@ REPO=/opt/orbis-src
 SOURCE="$REPO/orbis/core/orbis_core.py"
 TARGET=/usr/local/lib/orbis/orbis_core.py
 BACKUP="${TARGET}.before-stable-install"
-TMP="$(mktemp /tmp/orbis-core.XXXXXX.py)"
+# BusyBox/Alpine mktemp exige que os X finais encerrem o modelo; sufixo .py causa
+# "Invalid argument". SourceFileLoader e py_compile não dependem da extensão.
+TMP="$(mktemp /tmp/orbis-core.XXXXXX)"
 trap 'rm -f "$TMP"' EXIT
 
 if [ ! -f "$SOURCE" ]; then
