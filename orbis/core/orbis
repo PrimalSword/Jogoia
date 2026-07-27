@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="2.0.2"
+DEFAULT_VERSION="2.1.0"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -32,44 +32,34 @@ storage_status() { df -hP / 2>/dev/null | awk 'NR==2 {printf "%s usados de %s (%
 clock_status() { year="$(date +%Y 2>/dev/null || printf 0)"; if [ "$year" -ge 2024 ] 2>/dev/null; then date '+%d/%m/%Y %H:%M' 2>/dev/null || printf '%s' 'válido'; else printf '%s' 'INCORRETO — sincronize'; fi; }
 automation_status() { total=0; active=0; for file in /var/lib/orbis/jobs/*.job; do [ -f "$file" ] || continue; total=$((total + 1)); name="${file##*/}"; name="${name%.job}"; [ -f "/var/lib/orbis/jobs/$name.enabled" ] && active=$((active + 1)); done; printf '%s cadastradas, %s ativas' "$total" "$active"; }
 web_status() { if [ -x "$BIN_DIR/orbis-web" ] && "$BIN_DIR/orbis-web" --status 2>/dev/null | grep -q '^ATIVO'; then printf 'ativo :8080'; else printf 'inativo'; fi; }
+remote_status() { if command -v tailscale >/dev/null 2>&1; then ts_ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"; [ -n "$ts_ip" ] && printf 'ativo %s' "$ts_ip" || printf 'desconectado'; else printf 'não instalado'; fi; }
 
 show_status() {
   MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"; CPU="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)"; [ -n "$CPU" ] || CPU="$(uname -m)"
   IP="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)"; [ -n "$IP" ] || IP="desconectada"
-  POWER="$(power_status)"; UPTIME="$(format_uptime)"; TEMP="$(cpu_temperature)"; STORAGE="$(storage_status)"; CLOCK="$(clock_status)"; AUTOMATIONS="$(automation_status)"; WEB="$(web_status)"; LOAD="$(awk '{print $1}' /proc/loadavg 2>/dev/null || printf '?')"; wifi_status
+  POWER="$(power_status)"; UPTIME="$(format_uptime)"; TEMP="$(cpu_temperature)"; STORAGE="$(storage_status)"; CLOCK="$(clock_status)"; AUTOMATIONS="$(automation_status)"; WEB="$(web_status)"; REMOTE="$(remote_status)"; LOAD="$(awk '{print $1}' /proc/loadavg 2>/dev/null || printf '?')"; wifi_status
   clear
   printf '%s\n' '   ____  ____  ____  ___ ____' '  / __ \/ __ \/ __ )/  _/ __/' ' / /_/ / /_/ / __  |/ /_\ \  ' ' \____/\____/_____/___/___/'
   printf '  ORBIS OS  %s  •  %s\n' "$VERSION" "$SHORT_COMMIT"
   printf '%s\n' '─────────────────────────────────────────────'
-  printf ' SISTEMA    ONLINE\n CPU        %s\n MEMÓRIA    %s MB\n CARGA      %s\n TEMP.      %s\n UPTIME     %s\n DISCO      %s\n RELÓGIO    %s\n ENERGIA    %s\n WI-FI      %s  (%s)\n IP         %s\n HOST       %s\n AUTOMAÇÕES %s\n ORBIS CORE %s\n' "$CPU" "$MEM_MB" "$LOAD" "$TEMP" "$UPTIME" "$STORAGE" "$CLOCK" "$POWER" "$WIFI_SSID" "$WIFI_SIGNAL" "$IP" "$(hostname 2>/dev/null || printf orbis)" "$AUTOMATIONS" "$WEB"
+  printf ' SISTEMA    ONLINE\n CPU        %s\n MEMÓRIA    %s MB\n CARGA      %s\n TEMP.      %s\n UPTIME     %s\n DISCO      %s\n RELÓGIO    %s\n ENERGIA    %s\n WI-FI      %s  (%s)\n IP         %s\n HOST       %s\n AUTOMAÇÕES %s\n ORBIS CORE %s\n REMOTO     %s\n' "$CPU" "$MEM_MB" "$LOAD" "$TEMP" "$UPTIME" "$STORAGE" "$CLOCK" "$POWER" "$WIFI_SSID" "$WIFI_SIGNAL" "$IP" "$(hostname 2>/dev/null || printf orbis)" "$AUTOMATIONS" "$WEB" "$REMOTE"
   printf '%s\n\n' '─────────────────────────────────────────────'
 }
 
 repair_component() {
-  name="$1"
-  source="$REPO_CORE/$name"
-  target="$BIN_DIR/$name"
-  [ -r "$source" ] || return 1
-  tmp="$target.tmp.$$"
-  cp "$source" "$tmp" 2>/dev/null || return 1
-  chmod 0755 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
-  mv -f "$tmp" "$target" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  name="$1"; source="$REPO_CORE/$name"; target="$BIN_DIR/$name"; [ -r "$source" ] || return 1
+  tmp="$target.tmp.$$"; cp "$source" "$tmp" 2>/dev/null || return 1; chmod 0755 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }; mv -f "$tmp" "$target" 2>/dev/null || { rm -f "$tmp"; return 1; }
 }
 
 run_orbis_command() {
-  name="$1"
-  command_path="$BIN_DIR/$name"
+  name="$1"; command_path="$BIN_DIR/$name"
   if [ ! -x "$command_path" ] || ! head -c 1 "$command_path" >/dev/null 2>&1; then
     printf 'Componente danificado ou ilegível: %s\nTentando autorreparo...\n' "$command_path"
     repair_component "$name" || { printf 'Autorreparo indisponível para %s.\n' "$name"; return 1; }
   fi
   "$command_path" && return 0
   code=$?
-  if [ "$code" -ge 126 ]; then
-    printf 'Falha ao executar %s (código %s). Reparando e tentando novamente...\n' "$name" "$code"
-    repair_component "$name" && "$command_path"
-    return $?
-  fi
+  if [ "$code" -ge 126 ]; then printf 'Falha ao executar %s (código %s). Reparando e tentando novamente...\n' "$name" "$code"; repair_component "$name" && "$command_path"; return $?; fi
   return "$code"
 }
 
@@ -78,11 +68,11 @@ pause_menu() { printf '\nPressione Enter para voltar...'; read -r _ || true; }
 show_status
 [ "${1:-}" = "--status" ] && exit 0
 while :; do
-  printf '%s\n' ' APLICATIVOS' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações' ' 13  Orbis Core / Painel Web'
+  printf '%s\n' ' APLICATIVOS' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações' ' 13  Orbis Core / Painel Web' ' 14  Acesso remoto seguro'
   printf '%s\n' '' ' SISTEMA' '  5  Atualizar pelo Git' '  6  Ver logs' '  7  Instalar no cartão/disco' '  8  Atualizar painel' '  9  Reiniciar' ' 10  Desligar' ' 11  Sincronizar horário' '  0  Terminal'
   printf '\n%s' ' orbis › '; read -r choice || exit 0
   case "$choice" in
     1) run_orbis_command orbis-tetris; show_status ;; 2) run_orbis_command orbis-wifi; pause_menu; show_status ;; 3) run_orbis_command orbis-keyboard; pause_menu; show_status ;; 4) run_orbis_command orbis-doctor; pause_menu; show_status ;;
-    5) run_orbis_command orbis-update; pause_menu; show_status ;; 6) run_orbis_command orbis-log; show_status ;; 7) run_orbis_command orbis-install; pause_menu; show_status ;; 8) show_status ;; 9) reboot ;; 10) poweroff ;; 11) run_orbis_command orbis-time; pause_menu; show_status ;; 12) run_orbis_command orbis-jobs; show_status ;; 13) run_orbis_command orbis-web; show_status ;; 0) exit 0 ;; *) printf 'Opção inválida.\n' ;;
+    5) run_orbis_command orbis-update; pause_menu; show_status ;; 6) run_orbis_command orbis-log; show_status ;; 7) run_orbis_command orbis-install; pause_menu; show_status ;; 8) show_status ;; 9) reboot ;; 10) poweroff ;; 11) run_orbis_command orbis-time; pause_menu; show_status ;; 12) run_orbis_command orbis-jobs; show_status ;; 13) run_orbis_command orbis-web; show_status ;; 14) run_orbis_command orbis-remote; show_status ;; 0) exit 0 ;; *) printf 'Opção inválida.\n' ;;
   esac
 done
