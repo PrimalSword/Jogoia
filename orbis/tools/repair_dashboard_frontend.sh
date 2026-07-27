@@ -3,7 +3,12 @@ set -eu
 
 INSTALLED="/usr/local/lib/orbis/orbis_core.py"
 BACKUP="${INSTALLED}.frontend-backup"
-TMP="${INSTALLED}.frontend-tmp"
+TMP="${INSTALLED}.frontend-tmp.py"
+
+cleanup() {
+    rm -f "$TMP"
+}
+trap cleanup EXIT
 
 python3 - "$INSTALLED" "$TMP" <<'PY'
 from pathlib import Path
@@ -34,14 +39,14 @@ python3 -m py_compile "$TMP"
 
 # Valida também o JavaScript renderizado antes de substituir o Core ativo.
 python3 - "$TMP" <<'PY'
-import importlib.util
+from importlib.machinery import SourceFileLoader
 import sys
+import types
 
 path = sys.argv[1]
-spec = importlib.util.spec_from_file_location("orbis_core_candidate", path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
+module = types.ModuleType("orbis_core_candidate")
+module.__file__ = path
+SourceFileLoader(module.__name__, path).exec_module(module)
 page = module.dashboard_shell()
 
 expected = "Executando…\\n\\n$ "
@@ -51,7 +56,7 @@ if expected not in page or broken in page:
 PY
 
 cp "$INSTALLED" "$BACKUP"
-mv "$TMP" "$INSTALLED"
+cp "$TMP" "$INSTALLED"
 /usr/local/bin/orbis-web --restart
 sleep 5
 
