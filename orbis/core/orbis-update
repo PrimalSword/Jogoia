@@ -9,11 +9,18 @@ LOGFILE="/var/log/orbis.log"
 BACKUP_DIR="/opt/orbis-backup"
 LIB_DIR="/usr/local/lib/orbis"
 RUNTIME_CORE="$LIB_DIR/orbis_core.py"
-VERSION="2.2.1"
+VERSION="2.3.0"
 
 mkdir -p /opt /var/log /usr/local/bin "$LIB_DIR" "$BACKUP_DIR"
 mount -o remount,rw / 2>/dev/null || true
 log(){ printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true; }
+remove_blocking_remote_services(){
+  command -v rc-update >/dev/null 2>&1 || return 0
+  for service in tailscale tailscaled; do
+    rc-update del "$service" boot >/dev/null 2>&1 || true
+    rc-update del "$service" default >/dev/null 2>&1 || true
+  done
+}
 repair_apk(){
   mkdir -p /etc/apk
   [ -f /etc/apk/repositories ] || : > /etc/apk/repositories
@@ -43,6 +50,7 @@ restore_backup(){
   for file in "$BACKUP_DIR/current/bin"/*; do [ -f "$file" ] && install -m 0755 "$file" "/usr/local/bin/${file##*/}"; done
   [ -f "$BACKUP_DIR/current/lib/orbis_core.py" ] && install -m 0644 "$BACKUP_DIR/current/lib/orbis_core.py" "$RUNTIME_CORE"
   [ -f "$BACKUP_DIR/current/orbis-release" ] && cp "$BACKUP_DIR/current/orbis-release" "$RELEASE_FILE"
+  remove_blocking_remote_services
   sync; log 'Atualização falhou; backup restaurado.'
 }
 health_check(){ python3 - <<'PY' >/dev/null 2>&1
@@ -53,6 +61,7 @@ PY
 }
 trap 'restore_backup' INT TERM HUP
 printf '%s\n' 'ORBIS OS  •  ATUALIZAÇÃO SEGURA' '─────────────────────────────────────────────'
+remove_blocking_remote_services
 ping -c 1 -W 5 github.com >/dev/null 2>&1 || { printf '%s\n' 'Sem acesso ao GitHub. Confira o Wi-Fi.'; exit 1; }
 ensure_clock
 ensure_packages
@@ -73,6 +82,7 @@ install -m 0644 "$CORE_DIR/orbis_core.py" "$tmp_core"
 python3 -m py_compile "$tmp_core" || { rm -f "$tmp_core"; restore_backup; printf '%s\n' 'Validação do núcleo Python falhou.'; exit 1; }
 mv -f "$tmp_core" "$RUNTIME_CORE"
 [ -r "$RUNTIME_CORE" ] || { restore_backup; printf '%s\n' 'Núcleo não foi instalado no caminho esperado.'; exit 1; }
+remove_blocking_remote_services
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"; SHORT="$(git -C "$CHECKOUT" rev-parse --short HEAD)"
 cat > "$RELEASE_FILE" <<EOF
 ORBIS_VERSION=$VERSION
@@ -88,10 +98,5 @@ if [ -x /usr/local/bin/orbis-web ]; then
 fi
 trap - INT TERM HUP
 log "Orbis atualizado com segurança para $COMMIT"
-printf '\nAtualização concluída.\nVersão instalada: %s\nCommit instalado: %s\nCore: saudável\n' "$VERSION" "$SHORT"
-
-# A restauração da rede remota não pode bloquear nem invalidar a atualização.
-if [ -x /usr/local/bin/orbis-remote ]; then
-  ( /usr/local/bin/orbis-remote --boot >/var/log/orbis-remote-boot.log 2>&1 || true ) </dev/null &
-fi
-exit 0
+printf '\nAtualização concluída.\nVersão instalada: %s\nCommit instalado: %s\nCore: saudável\nBoot: Tailscale removido do OpenRC e iniciado em segundo plano\n' "$VERSION" "$SHORT"
+if [ -x /usr/local/bin/orbis-remote ]; then /usr/local/bin/orbis-remote --boot >/dev/null 2>&1 || true; fi
