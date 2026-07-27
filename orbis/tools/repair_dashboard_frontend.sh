@@ -1,15 +1,11 @@
 #!/bin/sh
 set -eu
 
-REPO="/opt/orbis-src"
-SOURCE="$REPO/orbis/core/orbis_core.py"
 INSTALLED="/usr/local/lib/orbis/orbis_core.py"
 BACKUP="${INSTALLED}.frontend-backup"
-TMP="${SOURCE}.frontend-tmp"
+TMP="${INSTALLED}.frontend-tmp"
 
-cd "$REPO"
-
-python3 - "$SOURCE" "$TMP" <<'PY'
+python3 - "$INSTALLED" "$TMP" <<'PY'
 from pathlib import Path
 import sys
 
@@ -24,19 +20,17 @@ new = """terminalOutput.textContent='Executando…\\n\\n$ '+command+'\\n';try{{c
 if old not in text:
     raise SystemExit("Trecho esperado do JavaScript não foi encontrado; nenhum arquivo foi alterado.")
 
-patched = text.replace(old, new, 1)
-target.write_text(patched, encoding="utf-8")
+target.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
 
 python3 -m py_compile "$TMP"
 cp "$INSTALLED" "$BACKUP"
-mv "$TMP" "$SOURCE"
-cp "$SOURCE" "$INSTALLED"
+mv "$TMP" "$INSTALLED"
 /usr/local/bin/orbis-web --restart
 sleep 5
 
 if wget -q -T 5 -O - http://127.0.0.1:8080/health | grep -qx "ok"; then
-    echo "SUCESSO: painel corrigido e Core saudável."
+    echo "SUCESSO: frontend corrigido, repositório preservado e Core saudável."
     exit 0
 fi
 
