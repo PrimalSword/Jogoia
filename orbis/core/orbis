@@ -1,9 +1,10 @@
 #!/bin/sh
 
-DEFAULT_VERSION="2.0.1"
+DEFAULT_VERSION="2.0.2"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
+REPO_CORE="/opt/orbis-src/orbis/core"
 
 if [ -f /etc/orbis-release ]; then
   . /etc/orbis-release 2>/dev/null || true
@@ -43,7 +44,35 @@ show_status() {
   printf ' SISTEMA    ONLINE\n CPU        %s\n MEMÓRIA    %s MB\n CARGA      %s\n TEMP.      %s\n UPTIME     %s\n DISCO      %s\n RELÓGIO    %s\n ENERGIA    %s\n WI-FI      %s  (%s)\n IP         %s\n HOST       %s\n AUTOMAÇÕES %s\n ORBIS CORE %s\n' "$CPU" "$MEM_MB" "$LOAD" "$TEMP" "$UPTIME" "$STORAGE" "$CLOCK" "$POWER" "$WIFI_SSID" "$WIFI_SIGNAL" "$IP" "$(hostname 2>/dev/null || printf orbis)" "$AUTOMATIONS" "$WEB"
   printf '%s\n\n' '─────────────────────────────────────────────'
 }
-run_orbis_command() { command_path="$BIN_DIR/$1"; [ -x "$command_path" ] || { printf 'Componente indisponível: %s\n' "$command_path"; return 1; }; "$command_path"; }
+
+repair_component() {
+  name="$1"
+  source="$REPO_CORE/$name"
+  target="$BIN_DIR/$name"
+  [ -r "$source" ] || return 1
+  tmp="$target.tmp.$$"
+  cp "$source" "$tmp" 2>/dev/null || return 1
+  chmod 0755 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$target" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+run_orbis_command() {
+  name="$1"
+  command_path="$BIN_DIR/$name"
+  if [ ! -x "$command_path" ] || ! head -c 1 "$command_path" >/dev/null 2>&1; then
+    printf 'Componente danificado ou ilegível: %s\nTentando autorreparo...\n' "$command_path"
+    repair_component "$name" || { printf 'Autorreparo indisponível para %s.\n' "$name"; return 1; }
+  fi
+  "$command_path" && return 0
+  code=$?
+  if [ "$code" -ge 126 ]; then
+    printf 'Falha ao executar %s (código %s). Reparando e tentando novamente...\n' "$name" "$code"
+    repair_component "$name" && "$command_path"
+    return $?
+  fi
+  return "$code"
+}
+
 pause_menu() { printf '\nPressione Enter para voltar...'; read -r _ || true; }
 
 show_status
