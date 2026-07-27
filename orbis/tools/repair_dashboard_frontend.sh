@@ -26,7 +26,9 @@ pattern = re.compile(
     re.DOTALL,
 )
 
-patched, count = pattern.subn(replacement, text, count=1)
+# Use uma função de substituição: re.sub interpreta barras invertidas em strings
+# de reposição e transformava \\n novamente em quebra de linha real.
+patched, count = pattern.subn(lambda _match: replacement, text, count=1)
 if count != 1:
     raise SystemExit(
         "Função executeTerminal não foi localizada de forma segura; nenhum arquivo foi alterado."
@@ -37,7 +39,7 @@ PY
 
 python3 -m py_compile "$TMP"
 
-# Valida também o JavaScript renderizado antes de substituir o Core ativo.
+# Valida o HTML realmente entregue ao navegador antes de substituir o Core ativo.
 python3 - "$TMP" <<'PY'
 from importlib.machinery import SourceFileLoader
 import sys
@@ -53,6 +55,10 @@ expected = "Executando…\\n\\n$ "
 broken = "Executando…\n\n$ "
 if expected not in page or broken in page:
     raise SystemExit("Validação do JavaScript falhou; Core ativo preservado.")
+
+# A telemetria depende deste trecho continuar presente no mesmo script.
+if "refresh();setInterval(refresh,10000);" not in page:
+    raise SystemExit("Validação da telemetria falhou; Core ativo preservado.")
 PY
 
 cp "$INSTALLED" "$BACKUP"
