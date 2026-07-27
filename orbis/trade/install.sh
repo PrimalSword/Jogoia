@@ -4,22 +4,30 @@ set -eu
 SRC_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 INSTALL_DIR=/usr/local/lib/orbis-trade
 BIN=/usr/local/bin/orbis-trade
+LAB_BIN=/usr/local/bin/orbis-trade-lab
 WEB_BIN=/usr/local/bin/orbis-trade-web
 DATA_DIR=/var/lib/orbis/trade
 PID_FILE=/run/orbis-trade-web.pid
 LOG_FILE=/var/log/orbis-trade-web.log
 
-python3 -m py_compile "$SRC_DIR/orbis_trade.py" "$SRC_DIR/orbis_trade_web.py"
+python3 -m py_compile "$SRC_DIR/orbis_trade.py" "$SRC_DIR/orbis_trade_web.py" "$SRC_DIR/orbis_trade_lab.py"
 mkdir -p "$INSTALL_DIR" "$DATA_DIR" /run
 cp "$SRC_DIR/orbis_trade.py" "$INSTALL_DIR/orbis_trade.py"
 cp "$SRC_DIR/orbis_trade_web.py" "$INSTALL_DIR/orbis_trade_web.py"
-chmod 0755 "$INSTALL_DIR/orbis_trade.py" "$INSTALL_DIR/orbis_trade_web.py"
+cp "$SRC_DIR/orbis_trade_lab.py" "$INSTALL_DIR/orbis_trade_lab.py"
+chmod 0755 "$INSTALL_DIR/orbis_trade.py" "$INSTALL_DIR/orbis_trade_web.py" "$INSTALL_DIR/orbis_trade_lab.py"
 
 cat > "$BIN" <<'EOF'
 #!/bin/sh
 exec python3 /usr/local/lib/orbis-trade/orbis_trade.py "$@"
 EOF
 chmod 0755 "$BIN"
+
+cat > "$LAB_BIN" <<'EOF'
+#!/bin/sh
+exec python3 /usr/local/lib/orbis-trade/orbis_trade_lab.py "$@"
+EOF
+chmod 0755 "$LAB_BIN"
 
 cat > "$WEB_BIN" <<'EOF'
 #!/bin/sh
@@ -60,7 +68,6 @@ wget -q -T 5 -O - http://127.0.0.1:8090/health | grep -qx ok
 EOF
 chmod 0755 "$WEB_BIN"
 
-# Persistência simples e compatível com Alpine/OpenRC.
 if [ -d /etc/local.d ]; then
   cat > /etc/local.d/orbis-trade.start <<'EOF'
 #!/bin/sh
@@ -73,6 +80,7 @@ fi
 "$WEB_BIN" restart
 
 printf '%s\n' "Orbis Trade instalado."
-printf '%s\n' "CLI: orbis-trade status"
+printf '%s\n' "CLI principal: orbis-trade status"
+printf '%s\n' "Quant Lab: orbis-trade-lab --help"
 printf '%s\n' "Painel: http://100.87.144.114:8090"
-printf '%s\n' "Modo atual: análise, replay e backtest; nenhuma ordem real é enviada."
+printf '%s\n' "Modo atual: análise, otimização, Monte Carlo, replay e paper trading; nenhuma ordem real é enviada."
