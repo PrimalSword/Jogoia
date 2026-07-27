@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="2.1.0"
+DEFAULT_VERSION="2.2.0"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -46,23 +46,8 @@ show_status() {
   printf '%s\n\n' '─────────────────────────────────────────────'
 }
 
-repair_component() {
-  name="$1"; source="$REPO_CORE/$name"; target="$BIN_DIR/$name"; [ -r "$source" ] || return 1
-  tmp="$target.tmp.$$"; cp "$source" "$tmp" 2>/dev/null || return 1; chmod 0755 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }; mv -f "$tmp" "$target" 2>/dev/null || { rm -f "$tmp"; return 1; }
-}
-
-run_orbis_command() {
-  name="$1"; command_path="$BIN_DIR/$name"
-  if [ ! -x "$command_path" ] || ! head -c 1 "$command_path" >/dev/null 2>&1; then
-    printf 'Componente danificado ou ilegível: %s\nTentando autorreparo...\n' "$command_path"
-    repair_component "$name" || { printf 'Autorreparo indisponível para %s.\n' "$name"; return 1; }
-  fi
-  "$command_path" && return 0
-  code=$?
-  if [ "$code" -ge 126 ]; then printf 'Falha ao executar %s (código %s). Reparando e tentando novamente...\n' "$name" "$code"; repair_component "$name" && "$command_path"; return $?; fi
-  return "$code"
-}
-
+repair_component() { name="$1"; source="$REPO_CORE/$name"; target="$BIN_DIR/$name"; [ -r "$source" ] || return 1; tmp="$target.tmp.$$"; cp "$source" "$tmp" 2>/dev/null || return 1; chmod 0755 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }; mv -f "$tmp" "$target" 2>/dev/null || { rm -f "$tmp"; return 1; }; }
+run_orbis_command() { name="$1"; command_path="$BIN_DIR/$name"; if [ ! -x "$command_path" ] || ! head -c 1 "$command_path" >/dev/null 2>&1; then printf 'Componente danificado ou ilegível: %s\nTentando autorreparo...\n' "$command_path"; repair_component "$name" || { printf 'Autorreparo indisponível para %s.\n' "$name"; return 1; }; fi; "$command_path" && return 0; code=$?; if [ "$code" -ge 126 ]; then printf 'Falha ao executar %s (código %s). Reparando e tentando novamente...\n' "$name" "$code"; repair_component "$name" && "$command_path"; return $?; fi; return "$code"; }
 pause_menu() { printf '\nPressione Enter para voltar...'; read -r _ || true; }
 
 show_status
