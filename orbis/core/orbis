@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="2.3.0"
+DEFAULT_VERSION="2.4.0"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
