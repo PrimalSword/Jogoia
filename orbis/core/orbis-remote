@@ -3,6 +3,7 @@ set -eu
 
 HOSTNAME_NAME="orbis"
 CORE_PORT="8080"
+TOKEN_FILE="/etc/orbis-web-token"
 
 pause() { printf '\nPressione Enter para continuar...'; read -r _ || true; }
 
@@ -14,12 +15,8 @@ ensure_repositories() {
 }
 
 start_service() {
-  if command -v rc-update >/dev/null 2>&1; then
-    rc-update add tailscale default >/dev/null 2>&1 || rc-update add tailscaled default >/dev/null 2>&1 || true
-  fi
-  if command -v rc-service >/dev/null 2>&1; then
-    rc-service tailscale start >/dev/null 2>&1 || rc-service tailscaled start >/dev/null 2>&1 || true
-  fi
+  if command -v rc-update >/dev/null 2>&1; then rc-update add tailscale default >/dev/null 2>&1 || rc-update add tailscaled default >/dev/null 2>&1 || true; fi
+  if command -v rc-service >/dev/null 2>&1; then rc-service tailscale start >/dev/null 2>&1 || rc-service tailscaled start >/dev/null 2>&1 || true; fi
   if ! pgrep tailscaled >/dev/null 2>&1; then
     mkdir -p /var/lib/tailscale /run/tailscale
     tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock >/var/log/tailscaled.log 2>&1 &
@@ -27,46 +24,77 @@ start_service() {
   fi
 }
 
+ensure_token() {
+  if [ ! -s "$TOKEN_FILE" ]; then
+    mkdir -p "${TOKEN_FILE%/*}"
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - <<'PY'
+import os, secrets
+p='/etc/orbis-web-token'; t=secrets.token_urlsafe(24)
+with open(p,'w',encoding='utf-8') as f: f.write(t+'\n')
+os.chmod(p,0o600)
+PY
+    else
+      umask 077; head -c 32 /dev/urandom | base64 > "$TOKEN_FILE"
+    fi
+  fi
+  chmod 600 "$TOKEN_FILE" 2>/dev/null || true
+}
+
+configure_serve() {
+  command -v tailscale >/dev/null 2>&1 || return 1
+  [ -x /usr/local/bin/orbis-web ] && /usr/local/bin/orbis-web --start >/dev/null 2>&1 || true
+  tailscale serve reset >/dev/null 2>&1 || true
+  tailscale serve --bg "http://127.0.0.1:$CORE_PORT" >/tmp/orbis-serve.log 2>&1 || {
+    printf '%s\n' 'Não foi possível ativar HTTPS automático agora.'
+    printf '%s\n' 'O painel continuará acessível pelo IP Tailscale quando o celular estiver conectado.'
+    return 1
+  }
+}
+
 install_remote() {
   mount -o remount,rw / 2>/dev/null || true
   ensure_repositories
-  printf '%s\n' 'Atualizando catálogo de pacotes...'
-  apk update
+  printf '%s\n' 'Atualizando catálogo de pacotes...'; apk update
   printf '%s\n' 'Instalando acesso remoto seguro...'
   apk add --no-cache tailscale tailscale-openrc 2>/dev/null || apk add --no-cache tailscale
   start_service
   printf '%s\n\n' 'Agora será exibido um endereço de autenticação.'
   printf '%s\n' 'Abra-o no celular, entre na sua conta e autorize o dispositivo “orbis”.'
   printf '%s\n\n' 'Nenhuma porta do roteador será aberta.'
-  tailscale up --ssh --hostname="$HOSTNAME_NAME" --accept-dns=false
+  tailscale up --ssh --hostname="$HOSTNAME_NAME" --accept-dns=true
   tailscale set --ssh=true >/dev/null 2>&1 || true
   tailscale set --webclient=true >/dev/null 2>&1 || true
-  [ -x /usr/local/bin/orbis-web ] && /usr/local/bin/orbis-web --start >/dev/null 2>&1 || true
+  ensure_token
+  configure_serve || true
   show_status
 }
 
-connected() {
-  command -v tailscale >/dev/null 2>&1 || return 1
-  tailscale status --json 2>/dev/null | grep -q '"BackendState"[[:space:]]*:[[:space:]]*"Running"' || tailscale ip -4 >/dev/null 2>&1
+connected() { command -v tailscale >/dev/null 2>&1 || return 1; tailscale ip -4 >/dev/null 2>&1; }
+
+magic_name() {
+  tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true
 }
 
 show_status() {
   clear
   printf '%s\n' 'ORBIS REMOTO' '─────────────────────────────────────────────'
-  if ! command -v tailscale >/dev/null 2>&1; then
-    printf '%s\n' 'Tailscale ainda não está instalado.'
-    return 0
-  fi
-  start_service
+  if ! command -v tailscale >/dev/null 2>&1; then printf '%s\n' 'Tailscale ainda não está instalado.'; return 0; fi
+  start_service; ensure_token
   TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+  DNS_NAME="$(magic_name)"
   if [ -n "$TS_IP" ]; then
-    printf '%s\n' 'STATUS     CONECTADO'
-    printf 'IP REMOTO  %s\n' "$TS_IP"
-    printf 'PAINEL     http://%s:%s\n' "$TS_IP" "$CORE_PORT"
-    printf '%s\n' 'TERMINAL   Tailscale Admin Console → Machines → orbis → SSH'
-    printf '%s\n' 'SEGURANÇA  conexão privada e criptografada; sem redirecionar portas'
+    printf '%s\n' 'STATUS       CONECTADO'
+    printf 'IP REMOTO    %s\n' "$TS_IP"
+    printf 'PAINEL IP    http://%s:%s\n' "$TS_IP" "$CORE_PORT"
+    [ -n "$DNS_NAME" ] && printf 'PAINEL HTTPS https://%s\n' "$DNS_NAME"
+    printf 'TOKEN        %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null || printf indisponível)"
+    printf '%s\n' 'TERMINAL     Tailscale Admin Console → Machines → orbis → SSH'
+    printf '%s\n' 'CELULAR      instale/abra o app Tailscale e deixe a VPN conectada'
+    printf '%s\n' 'SEGURANÇA    conexão privada; ações administrativas exigem token'
+    printf '%s\n' 'ARQUIVOS     pasta remota limitada a /var/lib/orbis/shared'
   else
-    printf '%s\n' 'STATUS     aguardando autenticação'
+    printf '%s\n' 'STATUS       aguardando autenticação'
     printf '%s\n' 'Use a opção 1 para conectar.'
   fi
 }
@@ -74,42 +102,33 @@ show_status() {
 reconnect() {
   command -v tailscale >/dev/null 2>&1 || { printf '%s\n' 'Instale primeiro pela opção 1.'; return 1; }
   start_service
-  tailscale up --ssh --hostname="$HOSTNAME_NAME" --accept-dns=false
+  tailscale up --ssh --hostname="$HOSTNAME_NAME" --accept-dns=true
   tailscale set --ssh=true >/dev/null 2>&1 || true
   tailscale set --webclient=true >/dev/null 2>&1 || true
-  show_status
+  ensure_token; configure_serve || true; show_status
+}
+
+rotate_token() {
+  rm -f "$TOKEN_FILE"; ensure_token
+  printf '%s\n' 'Token trocado. O token salvo nos navegadores antigos deixou de funcionar.'
+  printf 'NOVO TOKEN: %s\n' "$(cat "$TOKEN_FILE")"
 }
 
 disable_remote() {
-  if command -v tailscale >/dev/null 2>&1; then
-    tailscale down >/dev/null 2>&1 || true
-    printf '%s\n' 'Acesso remoto desativado. O dispositivo continua vinculado à conta.'
-  else
-    printf '%s\n' 'Tailscale não está instalado.'
-  fi
+  if command -v tailscale >/dev/null 2>&1; then tailscale serve reset >/dev/null 2>&1 || true; tailscale down >/dev/null 2>&1 || true; printf '%s\n' 'Acesso remoto desativado. O dispositivo continua vinculado à conta.'; else printf '%s\n' 'Tailscale não está instalado.'; fi
 }
 
 case "${1:-menu}" in
-  --boot)
-    command -v tailscale >/dev/null 2>&1 && start_service || true
-    ;;
-  --status)
-    show_status
-    ;;
+  --boot) command -v tailscale >/dev/null 2>&1 && { start_service; configure_serve >/dev/null 2>&1 || true; } || true ;;
+  --status) show_status ;;
   *)
     while :; do
       clear
       printf '%s\n' 'ORBIS REMOTO' '─────────────────────────────────────────────'
-      printf '%s\n' ' 1  Instalar e conectar' ' 2  Ver endereço remoto' ' 3  Reconectar / autenticar' ' 4  Desativar acesso remoto' ' 0  Voltar'
-      printf '\n%s' ' remoto › '
-      read -r choice || exit 0
+      printf '%s\n' ' 1  Instalar e conectar' ' 2  Ver endereços e token' ' 3  Reconectar / reparar HTTPS' ' 4  Trocar token administrativo' ' 5  Desativar acesso remoto' ' 0  Voltar'
+      printf '\n%s' ' remoto › '; read -r choice || exit 0
       case "$choice" in
-        1) install_remote; pause ;;
-        2) show_status; pause ;;
-        3) reconnect; pause ;;
-        4) disable_remote; pause ;;
-        0) exit 0 ;;
-        *) printf '%s\n' 'Opção inválida.'; sleep 1 ;;
+        1) install_remote; pause ;; 2) show_status; pause ;; 3) reconnect; pause ;; 4) rotate_token; pause ;; 5) disable_remote; pause ;; 0) exit 0 ;; *) printf '%s\n' 'Opção inválida.'; sleep 1 ;;
       esac
     done
     ;;
