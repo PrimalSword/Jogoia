@@ -36,6 +36,7 @@ ALLOWED_TEXT_SUFFIXES = {".txt", ".md", ".json", ".csv", ".log", ".conf", ".ini"
 MAX_TERMINAL_COMMAND = 8192
 MAX_TERMINAL_OUTPUT = 128 * 1024
 TERMINAL_TIMEOUT = 30
+TERMINAL_SHELL = "/bin/sh"
 
 
 def read_text(path: Path, default: str = "") -> str:
@@ -241,7 +242,7 @@ body{{font-family:system-ui,sans-serif;background:#0b0f14;color:#eaf2ff;margin:0
 const tokenInput=document.getElementById('token');tokenInput.value=localStorage.getItem('orbisToken')||'';let editing='';function saveToken(){{localStorage.setItem('orbisToken',tokenInput.value.trim());showControls();}}function token(){{return localStorage.getItem('orbisToken')||'';}}function showControls(){{document.getElementById('controls').classList.toggle('hidden',!token());}}showControls();function fmtUptime(s){{const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.floor((s%3600)/60);return (d?d+'d ':'')+(h?h+'h ':'')+m+'m';}}
 async function refresh(){{try{{const r=await fetch('/api/status?ts='+Date.now(),{{cache:'no-store'}});const d=await r.json();memory.textContent=`${{d.memory.available_mb}} MB livres / ${{d.memory.total_mb}} MB`;cpu.textContent=(d.cpu.load||[]).join(' ')+' · '+d.cpu.model;temperature.textContent=d.cpu.temperature_c==null?'indisponível':d.cpu.temperature_c+' °C';disk.textContent=d.disk;wifi.textContent=`${{d.wifi.ssid}} · ${{d.wifi.signal}}`;remote.textContent=d.tailscale.dns||d.tailscale.ip||'desconectado';git.textContent=d.git.available?`${{d.git.branch}} · ${{d.git.local}}${{d.git.behind>0?' · '+d.git.behind+' atualização(ões)':' · atualizado'}}`:'indisponível';uptime.textContent=fmtUptime(d.uptime_seconds);automationList.innerHTML=(d.automations.items||[]).map(j=>`<p><b>${{j.name}}</b> · ${{j.schedule}} · ${{j.enabled?'ativa':'inativa'}} <button onclick="job('${{encodeURIComponent(j.name)}}','toggle')">Ativar/desativar</button><button onclick="job('${{encodeURIComponent(j.name)}}','run')">Executar</button></p>`).join('')||'<p>Nenhuma automação.</p>';processList.innerHTML='<table><tr><th>PID</th><th>Processo</th><th>CPU</th><th>RAM</th></tr>'+(d.processes||[]).map(p=>`<tr><td>${{p.pid}}</td><td>${{p.name}}</td><td>${{p.cpu}}</td><td>${{p.memory}}</td></tr>`).join('')+'</table>';files.innerHTML=(d.files||[]).map(f=>`<p><a class='button' href='/files/${{encodeURIComponent(f.name)}}'>Baixar</a> ${{f.name}} · ${{Math.ceil(f.size/1024)}} KB ${{f.editable?`<button onclick="editFile(${{JSON.stringify(f.name)}})">Editar</button>`:''}} <button class='danger' onclick='deleteFile(${{JSON.stringify(f.name)}})'>Excluir</button></p>`).join('')||'<p>Nenhum arquivo.</p>';foot.textContent='Atualizado às '+new Date().toLocaleTimeString();foot.className='';}}catch(e){{foot.textContent='Falha: '+e.message;foot.className='warn';}}}}
 async function admin(path,opts={{}}){{opts.headers=Object.assign({{'X-Orbis-Token':token()}},opts.headers||{{}});const r=await fetch(path,opts);const txt=await r.text();if(!r.ok)throw new Error(txt||('HTTP '+r.status));return txt;}}async function action(name){{if(!confirm('Executar '+name+'?'))return;try{{alert(await admin('/api/action',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{action:name}})}}));}}catch(e){{alert(e.message);}}}}async function loadLog(name){{try{{log.textContent=await admin('/api/log?name='+encodeURIComponent(name));}}catch(e){{log.textContent=e.message;}}}}async function uploadFile(){{const f=upload.files[0];if(!f)return;try{{await admin('/api/files?name='+encodeURIComponent(f.name),{{method:'PUT',headers:{{'Content-Type':'application/octet-stream'}},body:f}});upload.value='';refresh();}}catch(e){{alert(e.message);}}}}async function deleteFile(name){{if(!confirm('Excluir '+name+'?'))return;try{{await admin('/api/files?name='+encodeURIComponent(name),{{method:'DELETE'}});refresh();}}catch(e){{alert(e.message);}}}}async function editFile(name){{try{{editing=name;editorTitle.textContent=name;editor.value=await admin('/api/file-text?name='+encodeURIComponent(name));editorBox.classList.remove('hidden');}}catch(e){{alert(e.message);}}}}function closeEdit(){{editing='';editorBox.classList.add('hidden');}}async function saveEdit(){{try{{await admin('/api/file-text?name='+encodeURIComponent(editing),{{method:'PUT',headers:{{'Content-Type':'text/plain; charset=utf-8'}},body:editor.value}});alert('Arquivo salvo.');refresh();}}catch(e){{alert(e.message);}}}}async function job(name,op){{try{{alert(await admin('/api/job',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name:decodeURIComponent(name),operation:op}})}}));refresh();}}catch(e){{alert(e.message);}}}}async function quickCommand(){{try{{quickOut.textContent=await admin('/api/quick?name='+encodeURIComponent(quick.value));}}catch(e){{quickOut.textContent=e.message;}}}}
-function terminalHistory(){{try{{return JSON.parse(localStorage.getItem('orbisTerminalHistory')||'[]');}}catch(e){{return [];}}}}function saveTerminalCommand(command){{const h=terminalHistory().filter(x=>x!==command);h.unshift(command);localStorage.setItem('orbisTerminalHistory',JSON.stringify(h.slice(0,50)));}}function repeatLastCommand(){{const h=terminalHistory();if(h.length){{terminalCommand.value=h[0];executeTerminal();}}}}function clearTerminal(){{terminalOutput.textContent='';}}async function executeTerminal(){{const command=terminalCommand.value.trim();const cwd=terminalCwd.value.trim()||'/opt/orbis-src';if(!command){{terminalOutput.textContent='Digite um comando.';return;}}saveTerminalCommand(command);terminalOutput.textContent='Executando…\\n\\n$ '+command+'\\n';try{{const raw=await admin('/api/terminal/exec',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command,cwd}})}});const data=JSON.parse(raw);terminalOutput.textContent='$ '+command+'\\n\\n'+(data.output||data.error||'')+'\\n\\n[exit '+(data.exit_code??'?')+' · '+(data.duration_ms??'?')+' ms]';}}catch(e){{terminalOutput.textContent='Falha: '+e.message;}}}}
+function terminalHistory(){{try{{return JSON.parse(localStorage.getItem('orbisTerminalHistory')||'[]');}}catch(e){{return [];}}}}function saveTerminalCommand(command){{const h=terminalHistory().filter(x=>x!==command);h.unshift(command);localStorage.setItem('orbisTerminalHistory',JSON.stringify(h.slice(0,50)));}}function repeatLastCommand(){{const h=terminalHistory();if(h.length){{terminalCommand.value=h[0];executeTerminal();}}}}function clearTerminal(){{terminalOutput.textContent='';}}async function executeTerminal(){{const command=terminalCommand.value.trim();const cwd=terminalCwd.value.trim()||'/opt/orbis-src';if(!command){{terminalOutput.textContent='Digite um comando.';return;}}saveTerminalCommand(command);terminalOutput.textContent='Executando…\n\n$ '+command+'\n';try{{const raw=await admin('/api/terminal/exec',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command,cwd}})}});const data=JSON.parse(raw);terminalOutput.textContent='$ '+command+'\n\n'+(data.output||data.error||'')+'\n\n[shell '+(data.shell||'?')+' · exit '+(data.exit_code??'?')+' · '+(data.duration_ms??'?')+' ms]';}}catch(e){{terminalOutput.textContent='Falha: '+e.message;}}}}
 refresh();setInterval(refresh,10000);
 </script></body></html>"""
 
@@ -253,7 +254,7 @@ class OrbisHTTPServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "OrbisCore/2.5"
+    server_version = "OrbisCore/2.5.1"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -314,7 +315,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/terminal/status":
                 if not self.require_auth():
                     return
-                self.json_response({"status": "online", "timeout_seconds": TERMINAL_TIMEOUT, "max_command": MAX_TERMINAL_COMMAND, "max_output": MAX_TERMINAL_OUTPUT, "cwd": str(REPO_DIR)})
+                self.json_response({"status": "online", "shell": TERMINAL_SHELL, "timeout_seconds": TERMINAL_TIMEOUT, "max_command": MAX_TERMINAL_COMMAND, "max_output": MAX_TERMINAL_OUTPUT, "cwd": str(REPO_DIR)})
             elif path == "/api/log":
                 if not self.require_auth():
                     return
@@ -416,23 +417,26 @@ class Handler(BaseHTTPRequestHandler):
             if not workdir.is_dir():
                 self.json_response({"error": f"diretório inexistente: {cwd}"}, 400)
                 return
+            if not Path(TERMINAL_SHELL).is_file():
+                self.json_response({"error": f"shell indisponível: {TERMINAL_SHELL}"}, 503)
+                return
             started = time.monotonic()
-            event(f"terminal remoto iniciado: {command[:200]}")
+            event(f"terminal remoto iniciado via {TERMINAL_SHELL}: {command[:200]}")
             try:
-                completed = subprocess.run(["/bin/bash", "-lc", command], cwd=str(workdir), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=TERMINAL_TIMEOUT)
+                completed = subprocess.run([TERMINAL_SHELL, "-lc", command], cwd=str(workdir), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=TERMINAL_TIMEOUT)
                 output = completed.stdout or ""
                 if len(output) > MAX_TERMINAL_OUTPUT:
                     output = output[:MAX_TERMINAL_OUTPUT] + "\n[saída truncada pelo Orbis]"
                 duration_ms = round((time.monotonic() - started) * 1000)
                 event(f"terminal remoto finalizado: código={completed.returncode}")
-                self.json_response({"ok": completed.returncode == 0, "exit_code": completed.returncode, "output": output, "cwd": str(workdir), "duration_ms": duration_ms})
+                self.json_response({"ok": completed.returncode == 0, "exit_code": completed.returncode, "output": output, "cwd": str(workdir), "shell": TERMINAL_SHELL, "duration_ms": duration_ms})
             except subprocess.TimeoutExpired as exc:
                 output = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
                 event("terminal remoto interrompido por timeout")
-                self.json_response({"ok": False, "exit_code": 124, "output": output, "error": f"tempo limite de {TERMINAL_TIMEOUT} segundos excedido"}, 408)
+                self.json_response({"ok": False, "exit_code": 124, "output": output, "shell": TERMINAL_SHELL, "error": f"tempo limite de {TERMINAL_TIMEOUT} segundos excedido"}, 408)
             except OSError as exc:
                 event(f"erro no terminal remoto: {exc}")
-                self.json_response({"ok": False, "error": str(exc)}, 500)
+                self.json_response({"ok": False, "shell": TERMINAL_SHELL, "error": str(exc)}, 500)
         elif path == "/api/action":
             action = str(data.get("action", ""))
             commands = {"update": ["/usr/local/bin/orbis-update"], "restart-core": ["/usr/local/bin/orbis-web", "--restart"], "restart-remote": ["/usr/local/bin/orbis-remote", "--boot"], "sync-time": ["/usr/local/bin/orbis-time"], "reboot": ["reboot"], "poweroff": ["poweroff"]}
