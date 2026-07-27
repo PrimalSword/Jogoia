@@ -1,0 +1,116 @@
+#!/bin/sh
+set -eu
+
+HOSTNAME_NAME="orbis"
+CORE_PORT="8080"
+
+pause() { printf '\nPressione Enter para continuar...'; read -r _ || true; }
+
+ensure_repositories() {
+  mkdir -p /etc/apk
+  [ -f /etc/apk/repositories ] || : > /etc/apk/repositories
+  grep -Eq '^[^#].*/v3\.24/main([[:space:]]*)$' /etc/apk/repositories 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> /etc/apk/repositories
+  grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' /etc/apk/repositories 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> /etc/apk/repositories
+}
+
+start_service() {
+  if command -v rc-update >/dev/null 2>&1; then
+    rc-update add tailscale default >/dev/null 2>&1 || rc-update add tailscaled default >/dev/null 2>&1 || true
+  fi
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service tailscale start >/dev/null 2>&1 || rc-service tailscaled start >/dev/null 2>&1 || true
+  fi
+  if ! pgrep tailscaled >/dev/null 2>&1; then
+    mkdir -p /var/lib/tailscale /run/tailscale
+    tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock >/var/log/tailscaled.log 2>&1 &
+    sleep 2
+  fi
+}
+
+install_remote() {
+  mount -o remount,rw / 2>/dev/null || true
+  ensure_repositories
+  printf '%s\n' 'Atualizando catálogo de pacotes...'
+  apk update
+  printf '%s\n' 'Instalando acesso remoto seguro...'
+  apk add --no-cache tailscale tailscale-openrc 2>/dev/null || apk add --no-cache tailscale
+  start_service
+  printf '%s\n\n' 'Agora será exibido um endereço de autenticação.'
+  printf '%s\n' 'Abra-o no celular, entre na sua conta e autorize o dispositivo “orbis”.'
+  printf '%s\n\n' 'Nenhuma porta do roteador será aberta.'
+  tailscale up --ssh --hostname="$HOSTNAME_NAME" --accept-dns=false
+  tailscale set --ssh=true >/dev/null 2>&1 || true
+  tailscale set --webclient=true >/dev/null 2>&1 || true
+  [ -x /usr/local/bin/orbis-web ] && /usr/local/bin/orbis-web --start >/dev/null 2>&1 || true
+  show_status
+}
+
+connected() {
+  command -v tailscale >/dev/null 2>&1 || return 1
+  tailscale status --json 2>/dev/null | grep -q '"BackendState"[[:space:]]*:[[:space:]]*"Running"' || tailscale ip -4 >/dev/null 2>&1
+}
+
+show_status() {
+  clear
+  printf '%s\n' 'ORBIS REMOTO' '─────────────────────────────────────────────'
+  if ! command -v tailscale >/dev/null 2>&1; then
+    printf '%s\n' 'Tailscale ainda não está instalado.'
+    return 0
+  fi
+  start_service
+  TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+  if [ -n "$TS_IP" ]; then
+    printf '%s\n' 'STATUS     CONECTADO'
+    printf 'IP REMOTO  %s\n' "$TS_IP"
+    printf 'PAINEL     http://%s:%s\n' "$TS_IP" "$CORE_PORT"
+    printf '%s\n' 'TERMINAL   Tailscale Admin Console → Machines → orbis → SSH'
+    printf '%s\n' 'SEGURANÇA  conexão privada e criptografada; sem redirecionar portas'
+  else
+    printf '%s\n' 'STATUS     aguardando autenticação'
+    printf '%s\n' 'Use a opção 1 para conectar.'
+  fi
+}
+
+reconnect() {
+  command -v tailscale >/dev/null 2>&1 || { printf '%s\n' 'Instale primeiro pela opção 1.'; return 1; }
+  start_service
+  tailscale up --ssh --hostname="$HOSTNAME_NAME" --accept-dns=false
+  tailscale set --ssh=true >/dev/null 2>&1 || true
+  tailscale set --webclient=true >/dev/null 2>&1 || true
+  show_status
+}
+
+disable_remote() {
+  if command -v tailscale >/dev/null 2>&1; then
+    tailscale down >/dev/null 2>&1 || true
+    printf '%s\n' 'Acesso remoto desativado. O dispositivo continua vinculado à conta.'
+  else
+    printf '%s\n' 'Tailscale não está instalado.'
+  fi
+}
+
+case "${1:-menu}" in
+  --boot)
+    command -v tailscale >/dev/null 2>&1 && start_service || true
+    ;;
+  --status)
+    show_status
+    ;;
+  *)
+    while :; do
+      clear
+      printf '%s\n' 'ORBIS REMOTO' '─────────────────────────────────────────────'
+      printf '%s\n' ' 1  Instalar e conectar' ' 2  Ver endereço remoto' ' 3  Reconectar / autenticar' ' 4  Desativar acesso remoto' ' 0  Voltar'
+      printf '\n%s' ' remoto › '
+      read -r choice || exit 0
+      case "$choice" in
+        1) install_remote; pause ;;
+        2) show_status; pause ;;
+        3) reconnect; pause ;;
+        4) disable_remote; pause ;;
+        0) exit 0 ;;
+        *) printf '%s\n' 'Opção inválida.'; sleep 1 ;;
+      esac
+    done
+    ;;
+esac
