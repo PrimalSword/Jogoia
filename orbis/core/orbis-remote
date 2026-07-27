@@ -4,6 +4,7 @@ set -eu
 HOSTNAME_NAME="orbis"
 CORE_PORT="8080"
 TOKEN_FILE="/etc/orbis-web-token"
+BOOT_LOG="/var/log/orbis-remote-boot.log"
 
 pause() { printf '\nPressione Enter para continuar...'; read -r _ || true; }
 
@@ -14,14 +15,41 @@ ensure_repositories() {
   grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' /etc/apk/repositories 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> /etc/apk/repositories
 }
 
+remove_openrc_boot_hooks() {
+  command -v rc-update >/dev/null 2>&1 || return 0
+  for service in tailscale tailscaled; do
+    rc-update del "$service" boot >/dev/null 2>&1 || true
+    rc-update del "$service" default >/dev/null 2>&1 || true
+  done
+}
+
+wait_for_network() {
+  count=0
+  while [ "$count" -lt 30 ]; do
+    ip -4 route show default 2>/dev/null | grep -q '^default ' && return 0
+    count=$((count + 1)); sleep 1
+  done
+  return 1
+}
+
 start_service() {
-  if command -v rc-update >/dev/null 2>&1; then rc-update add tailscale default >/dev/null 2>&1 || rc-update add tailscaled default >/dev/null 2>&1 || true; fi
-  if command -v rc-service >/dev/null 2>&1; then rc-service tailscale start >/dev/null 2>&1 || rc-service tailscaled start >/dev/null 2>&1 || true; fi
-  if ! pgrep tailscaled >/dev/null 2>&1; then
-    mkdir -p /var/lib/tailscale /run/tailscale
-    tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock >/var/log/tailscaled.log 2>&1 &
-    sleep 2
-  fi
+  remove_openrc_boot_hooks
+  command -v tailscaled >/dev/null 2>&1 || return 1
+  pgrep tailscaled >/dev/null 2>&1 && return 0
+  mkdir -p /var/lib/tailscale /run/tailscale /var/log
+  tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock >>/var/log/tailscaled.log 2>&1 </dev/null &
+  count=0
+  while [ "$count" -lt 8 ]; do
+    [ -S /run/tailscale/tailscaled.sock ] && return 0
+    pgrep tailscaled >/dev/null 2>&1 || break
+    count=$((count + 1)); sleep 1
+  done
+  [ -S /run/tailscale/tailscaled.sock ]
+}
+
+run_limited() {
+  seconds="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$seconds" "$@"; else "$@"; fi
 }
 
 ensure_token() {
@@ -44,8 +72,8 @@ PY
 configure_serve() {
   command -v tailscale >/dev/null 2>&1 || return 1
   [ -x /usr/local/bin/orbis-web ] && /usr/local/bin/orbis-web --start >/dev/null 2>&1 || true
-  tailscale serve reset >/dev/null 2>&1 || true
-  tailscale serve --bg "http://127.0.0.1:$CORE_PORT" >/tmp/orbis-serve.log 2>&1 || {
+  run_limited 8 tailscale serve reset >/dev/null 2>&1 || true
+  run_limited 12 tailscale serve --bg "http://127.0.0.1:$CORE_PORT" >/tmp/orbis-serve.log 2>&1 || {
     printf '%s\n' 'Não foi possível ativar HTTPS automático agora.'
     printf '%s\n' 'O painel continuará acessível pelo IP Tailscale quando o celular estiver conectado.'
     return 1
@@ -58,6 +86,7 @@ install_remote() {
   printf '%s\n' 'Atualizando catálogo de pacotes...'; apk update
   printf '%s\n' 'Instalando acesso remoto seguro...'
   apk add --no-cache tailscale tailscale-openrc 2>/dev/null || apk add --no-cache tailscale
+  remove_openrc_boot_hooks
   start_service
   printf '%s\n\n' 'Agora será exibido um endereço de autenticação.'
   printf '%s\n' 'Abra-o no celular, entre na sua conta e autorize o dispositivo “orbis”.'
@@ -70,8 +99,6 @@ install_remote() {
   show_status
 }
 
-connected() { command -v tailscale >/dev/null 2>&1 || return 1; tailscale ip -4 >/dev/null 2>&1; }
-
 magic_name() {
   tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true
 }
@@ -80,8 +107,8 @@ show_status() {
   clear
   printf '%s\n' 'ORBIS REMOTO' '─────────────────────────────────────────────'
   if ! command -v tailscale >/dev/null 2>&1; then printf '%s\n' 'Tailscale ainda não está instalado.'; return 0; fi
-  start_service; ensure_token
-  TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+  start_service || true; ensure_token
+  TS_IP="$(run_limited 5 tailscale ip -4 2>/dev/null | head -n1 || true)"
   DNS_NAME="$(magic_name)"
   if [ -n "$TS_IP" ]; then
     printf '%s\n' 'STATUS       CONECTADO'
@@ -90,12 +117,11 @@ show_status() {
     [ -n "$DNS_NAME" ] && printf 'PAINEL HTTPS https://%s\n' "$DNS_NAME"
     printf 'TOKEN        %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null || printf indisponível)"
     printf '%s\n' 'TERMINAL     Tailscale Admin Console → Machines → orbis → SSH'
-    printf '%s\n' 'CELULAR      instale/abra o app Tailscale e deixe a VPN conectada'
+    printf '%s\n' 'CELULAR      mantenha o app Tailscale conectado'
     printf '%s\n' 'SEGURANÇA    conexão privada; ações administrativas exigem token'
-    printf '%s\n' 'ARQUIVOS     pasta remota limitada a /var/lib/orbis/shared'
   else
-    printf '%s\n' 'STATUS       aguardando autenticação'
-    printf '%s\n' 'Use a opção 1 para conectar.'
+    printf '%s\n' 'STATUS       desconectado ou iniciando em segundo plano'
+    printf '%s\n' 'Use a opção 3 para reconectar manualmente.'
   fi
 }
 
@@ -115,11 +141,25 @@ rotate_token() {
 }
 
 disable_remote() {
-  if command -v tailscale >/dev/null 2>&1; then tailscale serve reset >/dev/null 2>&1 || true; tailscale down >/dev/null 2>&1 || true; printf '%s\n' 'Acesso remoto desativado. O dispositivo continua vinculado à conta.'; else printf '%s\n' 'Tailscale não está instalado.'; fi
+  remove_openrc_boot_hooks
+  if command -v tailscale >/dev/null 2>&1; then run_limited 5 tailscale serve reset >/dev/null 2>&1 || true; run_limited 5 tailscale down >/dev/null 2>&1 || true; printf '%s\n' 'Acesso remoto desativado. O dispositivo continua vinculado à conta.'; else printf '%s\n' 'Tailscale não está instalado.'; fi
+}
+
+boot_worker() {
+  remove_openrc_boot_hooks
+  wait_for_network || exit 0
+  start_service || exit 0
+  ensure_token
+  configure_serve >/dev/null 2>&1 || true
 }
 
 case "${1:-menu}" in
-  --boot) command -v tailscale >/dev/null 2>&1 && { start_service; configure_serve >/dev/null 2>&1 || true; } || true ;;
+  --boot)
+    mkdir -p /var/log
+    "$0" --boot-worker >>"$BOOT_LOG" 2>&1 </dev/null &
+    exit 0
+    ;;
+  --boot-worker) boot_worker ;;
   --status) show_status ;;
   *)
     while :; do
