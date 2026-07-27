@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DEFAULT_VERSION="2.2.1"
+DEFAULT_VERSION="2.3.0"
 VERSION="$DEFAULT_VERSION"
 COMMIT="embutido-na-ISO"
 BIN_DIR="/usr/local/bin"
@@ -32,7 +32,7 @@ storage_status() { df -hP / 2>/dev/null | awk 'NR==2 {printf "%s usados de %s (%
 clock_status() { year="$(date +%Y 2>/dev/null || printf 0)"; if [ "$year" -ge 2024 ] 2>/dev/null; then date '+%d/%m/%Y %H:%M' 2>/dev/null || printf '%s' 'válido'; else printf '%s' 'INCORRETO — sincronize'; fi; }
 automation_status() { total=0; active=0; for file in /var/lib/orbis/jobs/*.job; do [ -f "$file" ] || continue; total=$((total + 1)); name="${file##*/}"; name="${name%.job}"; [ -f "/var/lib/orbis/jobs/$name.enabled" ] && active=$((active + 1)); done; printf '%s cadastradas, %s ativas' "$total" "$active"; }
 web_status() { if [ -x "$BIN_DIR/orbis-web" ] && "$BIN_DIR/orbis-web" --status 2>/dev/null | grep -q '^ATIVO'; then printf 'ativo :8080'; else printf 'inativo'; fi; }
-remote_status() { if command -v tailscale >/dev/null 2>&1; then ts_ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"; [ -n "$ts_ip" ] && printf 'ativo %s' "$ts_ip" || printf 'desconectado'; else printf 'não instalado'; fi; }
+remote_status() { if command -v tailscale >/dev/null 2>&1; then ts_ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"; [ -n "$ts_ip" ] && printf 'ativo %s' "$ts_ip" || printf 'iniciando/desconectado'; else printf 'não instalado'; fi; }
 
 show_status() {
   MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '?')"; CPU="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)"; [ -n "$CPU" ] || CPU="$(uname -m)"
