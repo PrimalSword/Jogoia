@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Secure browser terminal for Orbis OS.
+"""Authenticated browser terminal for Orbis OS.
 
-This service is intentionally separate from the main dashboard. It is meant to
-be exposed only through the private Tailscale network and requires the same
-control token used by Orbis Core.
+The service is intended to run behind the private Tailscale network. It uses
+/etc/orbis-web-token, the same token used by Orbis Core, and is deliberately
+bounded by command size and execution timeout.
 """
 from __future__ import annotations
 
-import html
 import json
 import os
 import secrets
 import subprocess
 import time
-import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -21,6 +19,7 @@ from typing import Any
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("ORBIS_TERMINAL_PORT", "8081"))
 TOKEN_FILE = Path(os.environ.get("ORBIS_TOKEN_FILE", "/etc/orbis-web-token"))
+EVENTS_FILE = Path("/var/log/orbis-events.log")
 MAX_COMMAND = 8192
 MAX_OUTPUT = 128 * 1024
 COMMAND_TIMEOUT = 30
@@ -31,6 +30,15 @@ def read_token() -> str:
         return TOKEN_FILE.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def event(message: str) -> None:
+    try:
+        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with EVENTS_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} terminal: {message}\n")
+    except OSError:
+        pass
 
 
 def shell_html() -> str:
@@ -80,7 +88,7 @@ async function executeCommand(){
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "OrbisTerminal/1.0"
+    server_version = "OrbisTerminal/1.1"
 
     def log_message(self, fmt: str, *args: object) -> None:
         print(f"{self.client_address[0]} - {fmt % args}", flush=True)
@@ -112,16 +120,21 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_GET(self) -> None:
-        path = urllib.parse.urlsplit(self.path).path
+        path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self.send_bytes(shell_html().encode(), "text/html; charset=utf-8")
         elif path == "/health":
             self.send_bytes(b"ok\n", "text/plain; charset=utf-8")
+        elif path == "/api/terminal/status":
+            if not self.authorized():
+                self.json_response({"error": "não autorizado"}, 401)
+                return
+            self.json_response({"status": "online", "port": PORT, "timeout_seconds": COMMAND_TIMEOUT, "max_output_bytes": MAX_OUTPUT})
         else:
             self.send_bytes(b"not found\n", "text/plain", 404)
 
     def do_POST(self) -> None:
-        path = urllib.parse.urlsplit(self.path).path
+        path = self.path.split("?", 1)[0]
         if path != "/api/terminal/exec":
             self.json_response({"error": "rota inválida"}, 404)
             return
@@ -139,6 +152,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({"error": f"diretório inexistente: {cwd}"}, 400)
             return
         started = time.monotonic()
+        event(f"execução iniciada: {command[:200]}")
         try:
             completed = subprocess.run(
                 ["/bin/bash", "-lc", command],
@@ -152,11 +166,14 @@ class Handler(BaseHTTPRequestHandler):
             output = completed.stdout or ""
             if len(output) > MAX_OUTPUT:
                 output = output[:MAX_OUTPUT] + "\n[saída truncada pelo Orbis Terminal]"
+            event(f"execução finalizada: código={completed.returncode}")
             self.json_response({"ok": completed.returncode == 0, "exit_code": completed.returncode, "output": output, "cwd": str(workdir), "duration_ms": round((time.monotonic() - started) * 1000)})
         except subprocess.TimeoutExpired as exc:
             output = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+            event("execução interrompida por timeout")
             self.json_response({"ok": False, "exit_code": 124, "output": output, "error": "tempo limite de 30 segundos excedido"}, 408)
         except OSError as exc:
+            event(f"erro de execução: {exc}")
             self.json_response({"ok": False, "error": str(exc)}, 500)
 
 
