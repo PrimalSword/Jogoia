@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.4"
+VERSION="0.2.5"
 ALPINE_VERSION="3.24.1"
 ARCH="x86_64"
 FLAVOR="extended"
@@ -23,7 +23,7 @@ for command in curl xorriso tar sha256sum install; do
   }
 done
 
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tv; do
   [ -f "$CORE_DIR/$file" ] || {
     echo "Arquivo ausente: $CORE_DIR/$file" >&2
     exit 1
@@ -125,7 +125,7 @@ alias status-orbis='orbis --status'
 alias log-orbis='orbis-log'
 EOF
 
-for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login; do
+for file in orbis orbis-wifi orbis-install orbis-update orbis-log orbis-login orbis-tv; do
   install -m 0755 "$CORE_DIR/$file" "$WORKDIR/overlay/usr/local/bin/$file"
 done
 
