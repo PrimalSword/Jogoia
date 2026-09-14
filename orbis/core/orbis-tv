@@ -1,0 +1,181 @@
+#!/bin/sh
+set -eu
+
+REPOS="/etc/apk/repositories"
+STATE_DIR="/var/lib/orbis-tv"
+PROFILE_DIR="$STATE_DIR/firefox"
+LAST_URL="$STATE_DIR/last-url"
+LOGFILE="/var/log/orbis-tv.log"
+DEFAULT_MODE="${ORBIS_TV_MODE:-800x600}"
+
+TV_PACKAGES="xorg-server xinit openbox firefox-esr dbus dbus-x11 xrandr mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput"
+
+say() { printf '%s\n' "$*"; }
+need_root() {
+  [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }
+}
+ensure_repositories() {
+  mkdir -p /etc/apk
+  [ -f "$REPOS" ] || : > "$REPOS"
+  grep -Eq '^[^#].*/v3\.24/main([[:space:]]*)$' "$REPOS" 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> "$REPOS"
+  grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' "$REPOS" 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> "$REPOS"
+}
+runtime_ready() {
+  command -v Xorg >/dev/null 2>&1 && \
+  command -v xinit >/dev/null 2>&1 && \
+  command -v openbox >/dev/null 2>&1 && \
+  command -v xrandr >/dev/null 2>&1 && \
+  { command -v firefox-esr >/dev/null 2>&1 || command -v firefox >/dev/null 2>&1; }
+}
+prepare() {
+  need_root
+  if runtime_ready; then
+    say 'Modo TV já está instalado.'
+    return 0
+  fi
+  say 'ORBIS TV  •  preparando ambiente gráfico mínimo'
+  say 'Isso instala Xorg, Openbox e Firefox ESR; nada gráfico ficará rodando em segundo plano.'
+  ensure_repositories
+  apk update
+  apk add --force-broken-world $TV_PACKAGES
+  mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
+  chmod 700 "$STATE_DIR" "$PROFILE_DIR" 2>/dev/null || true
+  cat > "$PROFILE_DIR/user.js" <<'EOF'
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("browser.sessionstore.resume_from_crash", false);
+user_pref("browser.tabs.warnOnClose", false);
+user_pref("browser.newtabpage.enabled", false);
+user_pref("browser.startup.page", 0);
+user_pref("toolkit.cosmeticAnimations.enabled", false);
+user_pref("ui.prefersReducedMotion", 1);
+user_pref("datareporting.healthreport.uploadEnabled", false);
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
+user_pref("browser.discovery.enabled", false);
+user_pref("browser.search.suggest.enabled", false);
+user_pref("media.autoplay.default", 0);
+EOF
+  say 'Modo TV preparado.'
+}
+normalize_url() {
+  case "$1" in
+    http://*|https://*|file://*) printf '%s\n' "$1" ;;
+    *) printf 'https://%s\n' "$1" ;;
+  esac
+}
+choose_url() {
+  requested="${1:-}"
+  if [ -n "$requested" ]; then
+    normalize_url "$requested"
+    return
+  fi
+  previous=""
+  [ -r "$LAST_URL" ] && previous="$(cat "$LAST_URL" 2>/dev/null || true)"
+  if [ -n "$previous" ]; then
+    printf 'Site [%s]: ' "$previous" >&2
+  else
+    printf 'Digite o site: ' >&2
+  fi
+  read -r entered || true
+  [ -n "${entered:-}" ] || entered="$previous"
+  [ -n "$entered" ] || { say 'Nenhum site informado.' >&2; exit 1; }
+  normalize_url "$entered"
+}
+make_session() {
+  session="$1"
+  cat > "$session" <<'EOF'
+#!/bin/sh
+set -u
+LOGFILE="${ORBIS_TV_LOG:-/var/log/orbis-tv.log}"
+PROFILE="${ORBIS_TV_PROFILE:-/var/lib/orbis-tv/firefox}"
+URL="${ORBIS_TV_URL:?URL ausente}"
+MODE="${ORBIS_TV_MODE:-800x600}"
+: > "$LOGFILE" 2>/dev/null || true
+
+# Escolhe primeiro uma saída externa VGA/HDMI/DP; se não houver, usa a primeira conectada.
+out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(VGA|HDMI|DP|DVI)' | head -n1 || true)"
+[ -n "$out" ] || out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1; exit}' || true)"
+if [ -n "$out" ]; then
+  if xrandr --query 2>/dev/null | awk -v o="$out" -v m="$MODE" '
+      $1==o && $2=="connected" {inside=1; next}
+      inside && $1 !~ /^[0-9]/ && $1 !~ /^\+/ {inside=0}
+      inside && $1==m {found=1}
+      END {exit found?0:1}'; then
+    xrandr --output "$out" --mode "$MODE" --primary >/dev/null 2>&1 || true
+  elif xrandr --query 2>/dev/null | grep -q '^[[:space:]]*640x480'; then
+    xrandr --output "$out" --mode 640x480 --primary >/dev/null 2>&1 || true
+  fi
+fi
+
+openbox >>"$LOGFILE" 2>&1 &
+obpid=$!
+sleep 1
+browser="$(command -v firefox-esr || command -v firefox)"
+export MOZ_DISABLE_AUTO_SAFE_MODE=1
+export MOZ_CRASHREPORTER_DISABLE=1
+export MOZ_NO_REMOTE=1
+if command -v dbus-run-session >/dev/null 2>&1; then
+  dbus-run-session -- "$browser" --no-remote --profile "$PROFILE" --kiosk "$URL" >>"$LOGFILE" 2>&1
+else
+  "$browser" --no-remote --profile "$PROFILE" --kiosk "$URL" >>"$LOGFILE" 2>&1
+fi
+code=$?
+kill "$obpid" 2>/dev/null || true
+wait "$obpid" 2>/dev/null || true
+exit "$code"
+EOF
+  chmod 700 "$session"
+}
+run_tv() {
+  need_root
+  runtime_ready || prepare
+  mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
+  url="$(choose_url "${1:-}")"
+  printf '%s\n' "$url" > "$LAST_URL"
+  session="/tmp/orbis-tv-session.$$"
+  make_session "$session"
+  export ORBIS_TV_URL="$url"
+  export ORBIS_TV_MODE="$DEFAULT_MODE"
+  export ORBIS_TV_PROFILE="$PROFILE_DIR"
+  export ORBIS_TV_LOG="$LOGFILE"
+  say "Abrindo: $url"
+  say "Modo de vídeo preferido: $DEFAULT_MODE"
+  say 'Para sair do navegador: Alt+F4 ou Ctrl+Q.'
+  trap 'rm -f "$session"' EXIT INT TERM HUP
+  if command -v chvt >/dev/null 2>&1; then chvt 1 2>/dev/null || true; fi
+  xinit "$session" -- :0 vt1 -nolisten tcp || {
+    code=$?
+    say "Falha ao iniciar o modo TV (código $code)."
+    say "Veja o log: $LOGFILE"
+    exit "$code"
+  }
+  rm -f "$session"
+  trap - EXIT INT TERM HUP
+  say 'Modo TV encerrado. Voltando ao terminal.'
+}
+status() {
+  say 'ORBIS TV  •  STATUS'
+  if runtime_ready; then say 'Runtime gráfico: instalado'; else say 'Runtime gráfico: ausente'; fi
+  if command -v firefox-esr >/dev/null 2>&1; then firefox-esr --version 2>/dev/null || true; elif command -v firefox >/dev/null 2>&1; then firefox --version 2>/dev/null || true; fi
+  [ -r "$LAST_URL" ] && printf 'Último site: %s\n' "$(cat "$LAST_URL")" || true
+  printf 'Modo preferido: %s\n' "$DEFAULT_MODE"
+  [ -s "$LOGFILE" ] && { say 'Últimas linhas do log:'; tail -n 12 "$LOGFILE"; }
+}
+help() {
+  cat <<'EOF'
+Uso:
+  orbis-tv                  pergunta o site e abre em tela cheia
+  orbis-tv exemplo.com      abre o site informado
+  orbis-tv --prepare        instala apenas o ambiente necessário
+  orbis-tv --status         mostra diagnóstico
+
+Variável opcional:
+  ORBIS_TV_MODE=640x480 orbis-tv exemplo.com
+EOF
+}
+
+case "${1:-}" in
+  --prepare|prepare|install|--install) prepare ;;
+  --status|status) status ;;
+  --help|-h|help) help ;;
+  *) run_tv "${1:-}" ;;
+esac
