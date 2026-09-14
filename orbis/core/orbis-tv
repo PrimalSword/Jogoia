@@ -9,7 +9,7 @@ LOGFILE="/var/log/orbis-tv.log"
 DEFAULT_MODE="${ORBIS_TV_MODE:-800x600}"
 DISPLAY_NUM="${ORBIS_TV_DISPLAY:-:0}"
 
-TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev"
+TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev eudev eudev-openrc alpine-conf"
 
 say() { printf '%s\n' "$*"; }
 need_root() {
@@ -25,6 +25,7 @@ runtime_ready() {
   command -v Xorg >/dev/null 2>&1 && \
   command -v openbox >/dev/null 2>&1 && \
   command -v xrandr >/dev/null 2>&1 && \
+  command -v xinput >/dev/null 2>&1 && \
   { command -v firefox-esr >/dev/null 2>&1 || command -v firefox >/dev/null 2>&1; }
 }
 ensure_video_stack() {
@@ -40,37 +41,79 @@ ensure_video_stack() {
   fi
   command -v modprobe >/dev/null 2>&1 && modprobe i915 2>>"$LOGFILE" || true
 }
+write_input_config() {
+  mkdir -p /etc/X11/xorg.conf.d
+  cat > /etc/X11/xorg.conf.d/40-orbis-input.conf <<'EOF'
+Section "InputClass"
+    Identifier "Orbis keyboard"
+    MatchIsKeyboard "on"
+    Driver "evdev"
+EndSection
+
+Section "InputClass"
+    Identifier "Orbis pointer"
+    MatchIsPointer "on"
+    Driver "evdev"
+EndSection
+
+Section "InputClass"
+    Identifier "Orbis touchpad"
+    MatchIsTouchpad "on"
+    Driver "synaptics"
+    Option "TapButton1" "1"
+EndSection
+EOF
+}
 ensure_input_stack() {
   ensure_repositories
   missing=""
-  for pkg in xf86-input-libinput xf86-input-evdev xf86-input-synaptics xinput; do
+  for pkg in eudev eudev-openrc alpine-conf xf86-input-libinput xf86-input-evdev xf86-input-synaptics xinput; do
     apk info -e "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
   done
   if [ -n "$missing" ]; then
-    say "Instalando suporte de mouse/touchpad:$missing"
+    say "Instalando suporte de teclado/touchpad:$missing"
     apk update
     apk add --force-broken-world $missing
   fi
+
+  # O Alpine mínimo usa mdev. O Xorg/libinput precisa de eudev para
+  # enumerar corretamente teclado, mouse e touchpad.
+  if command -v setup-devd >/dev/null 2>&1; then
+    if ! command -v udevadm >/dev/null 2>&1 || ! rc-service eudev status >/dev/null 2>&1; then
+      say 'Configurando eudev para os dispositivos de entrada...'
+      setup-devd udev >/tmp/orbis-tv-devd.log 2>&1 || {
+        say 'Falha ao configurar eudev.'
+        cat /tmp/orbis-tv-devd.log 2>/dev/null || true
+        return 1
+      }
+    fi
+  fi
+
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service eudev start >/dev/null 2>&1 || true
+    rc-service eudev-trigger start >/dev/null 2>&1 || true
+  fi
+  command -v udevadm >/dev/null 2>&1 && {
+    udevadm trigger --subsystem-match=input >/dev/null 2>&1 || true
+    udevadm settle --timeout=5 >/dev/null 2>&1 || true
+  }
   if command -v modprobe >/dev/null 2>&1; then
+    modprobe i8042 2>>"$LOGFILE" || true
     modprobe psmouse 2>>"$LOGFILE" || true
     modprobe usbhid 2>>"$LOGFILE" || true
     modprobe hid_generic 2>>"$LOGFILE" || true
   fi
+  write_input_config
 }
 prepare() {
   need_root
   ensure_repositories
-  if runtime_ready; then
-    mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
-    ensure_video_stack
-    ensure_input_stack
-    say 'Modo TV já está instalado; vídeo, mouse e touchpad verificados.'
-    return 0
+  if ! runtime_ready; then
+    say 'ORBIS TV  •  preparando ambiente gráfico mínimo'
+    say 'Instalando Xorg, Firefox ESR, vídeo Intel legado e suporte completo de teclado/touchpad.'
+    apk update
+    apk add --force-broken-world $TV_PACKAGES
   fi
-  say 'ORBIS TV  •  preparando ambiente gráfico mínimo'
-  say 'Instalando Xorg, Openbox, Firefox ESR, vídeo Intel legado e suporte de mouse/touchpad.'
-  apk update
-  apk add --force-broken-world $TV_PACKAGES
   mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
   chmod 700 "$STATE_DIR" "$PROFILE_DIR" 2>/dev/null || true
   cat > "$PROFILE_DIR/user.js" <<'EOF'
@@ -89,7 +132,7 @@ user_pref("media.autoplay.default", 0);
 EOF
   ensure_video_stack
   ensure_input_stack
-  say 'Modo TV preparado.'
+  say 'Modo TV preparado; vídeo e entrada verificados.'
 }
 normalize_url() {
   case "$1" in
@@ -120,9 +163,9 @@ configure_display() {
       inside && $1 ~ /^[A-Za-z]/ {inside=0}
       inside && $1==m {found=1}
       END {exit found?0:1}'; then
-    xrandr --output "$out" --mode "$mode" --primary >/dev/null 2>&1 || true
+    xrandr --output "$out" --mode "$mode" --primary --pos 0x0 >/dev/null 2>&1 || true
   elif xrandr --query 2>/dev/null | grep -q '^[[:space:]]*640x480'; then
-    xrandr --output "$out" --mode 640x480 --primary >/dev/null 2>&1 || true
+    xrandr --output "$out" --mode 640x480 --primary --pos 0x0 >/dev/null 2>&1 || true
   fi
 }
 start_xorg() {
@@ -130,20 +173,42 @@ start_xorg() {
   rm -f /tmp/.X0-lock 2>/dev/null || true
   ensure_video_stack
   ensure_input_stack
-  Xorg "$DISPLAY_NUM" vt1 -nolisten tcp >>"$LOGFILE" 2>&1 &
+  Xorg "$DISPLAY_NUM" vt1 -keeptty -nolisten tcp >>"$LOGFILE" 2>&1 &
   XORG_PID=$!
   export XORG_PID
   count=0
-  while [ "$count" -lt 30 ]; do
+  while [ "$count" -lt 40 ]; do
     if DISPLAY="$DISPLAY_NUM" xrandr --query >/dev/null 2>&1; then return 0; fi
     kill -0 "$XORG_PID" 2>/dev/null || break
     count=$((count + 1))
-    sleep 0.2
+    sleep 0.25
   done
   say 'Xorg não iniciou corretamente.'
-  grep -E '\(EE\)|\(WW\)|driver|Driver|screen|Screen|i915|intel|vesa|fbdev|mouse|Mouse|touchpad|Touchpad|synaptics|libinput|evdev' "$LOGFILE" 2>/dev/null | tail -n 60 || tail -n 60 "$LOGFILE" 2>/dev/null || true
+  grep -E '\(EE\)|\(WW\)|driver|Driver|screen|Screen|i915|intel|vesa|fbdev|input|Input' "$LOGFILE" 2>/dev/null | tail -n 60 || tail -n 60 "$LOGFILE" 2>/dev/null || true
   kill "$XORG_PID" 2>/dev/null || true
   wait "$XORG_PID" 2>/dev/null || true
+  return 1
+}
+validate_input() {
+  export DISPLAY="$DISPLAY_NUM"
+  list="$(xinput list 2>/dev/null || true)"
+  physical="$(printf '%s\n' "$list" | grep -vi 'XTEST' || true)"
+  keyboard=0
+  pointer=0
+  printf '%s\n' "$physical" | grep -Eqi 'slave[[:space:]]+keyboard|keyboard.*slave' && keyboard=1 || true
+  printf '%s\n' "$physical" | grep -Eqi 'slave[[:space:]]+pointer|pointer.*slave|touchpad|mouse|synaptics' && pointer=1 || true
+
+  if [ "$keyboard" -eq 1 ] && [ "$pointer" -eq 1 ]; then
+    say 'Entrada Xorg: teclado OK, ponteiro OK.'
+    return 0
+  fi
+
+  say 'SEGURANÇA: o Xorg abriu, mas não reconheceu todos os dispositivos de entrada.'
+  say "Teclado: $([ "$keyboard" -eq 1 ] && printf OK || printf AUSENTE)"
+  say "Mouse/touchpad: $([ "$pointer" -eq 1 ] && printf OK || printf AUSENTE)"
+  say 'O Firefox NÃO será aberto. O X será fechado automaticamente para não prender a máquina.'
+  printf '%s\n' "$list" >> "$LOGFILE" 2>/dev/null || true
+  grep -E 'input|Input|keyboard|mouse|touchpad|synaptics|libinput|evdev|udev' "$LOGFILE" 2>/dev/null | tail -n 60 || true
   return 1
 }
 stop_xorg() {
@@ -169,14 +234,21 @@ run_tv() {
 
   say "Abrindo: $url"
   say "Modo de vídeo preferido: $DEFAULT_MODE"
-  say 'Para sair do navegador: Alt+F4 ou Ctrl+Q.'
   command -v chvt >/dev/null 2>&1 && chvt 1 2>/dev/null || true
   start_xorg
   configure_display
+  if ! validate_input; then
+    stop_xorg
+    trap - EXIT INT TERM HUP
+    say 'Voltando ao terminal sem abrir o Firefox.'
+    return 1
+  fi
+
   openbox >>"$LOGFILE" 2>&1 &
   OPENBOX_PID=$!
   export OPENBOX_PID
   sleep 1
+  say 'Para sair do navegador: Alt+F4 ou Ctrl+Q.'
   browser="$(command -v firefox-esr || command -v firefox)"
   if command -v dbus-run-session >/dev/null 2>&1; then
     dbus-run-session -- "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url" >>"$LOGFILE" 2>&1 || code=$?
@@ -191,25 +263,29 @@ run_tv() {
 }
 status() {
   say 'ORBIS TV  •  STATUS'
-  if runtime_ready; then say 'Runtime gráfico: instalado'; else say 'Runtime gráfico: ausente'; fi
+  if runtime_ready; then say 'Runtime gráfico: instalado'; else say 'Runtime gráfico: incompleto'; fi
+  printf 'eudev: '; command -v udevadm >/dev/null 2>&1 && say 'instalado' || say 'ausente'
   printf 'i915: '; lsmod 2>/dev/null | grep -q '^i915' && say 'carregado' || say 'não carregado'
   printf 'psmouse: '; lsmod 2>/dev/null | grep -q '^psmouse' && say 'carregado' || say 'não carregado'
-  for pkg in xf86-video-intel xf86-video-vesa xf86-video-fbdev xf86-input-libinput xf86-input-evdev xf86-input-synaptics; do
+  for pkg in xf86-video-intel xf86-video-vesa xf86-video-fbdev xf86-input-libinput xf86-input-evdev xf86-input-synaptics xinput; do
     apk info -e "$pkg" >/dev/null 2>&1 && printf '%s: instalado\n' "$pkg" || printf '%s: ausente\n' "$pkg"
   done
-  if [ -n "${DISPLAY:-}" ] && command -v xinput >/dev/null 2>&1; then xinput list 2>/dev/null || true; fi
   if command -v firefox-esr >/dev/null 2>&1; then firefox-esr --version 2>/dev/null || true; elif command -v firefox >/dev/null 2>&1; then firefox --version 2>/dev/null || true; fi
   [ -r "$LAST_URL" ] && printf 'Último site: %s\n' "$(cat "$LAST_URL")" || true
   printf 'Modo preferido: %s\n' "$DEFAULT_MODE"
-  [ -s "$LOGFILE" ] && { say 'Últimas linhas do log:'; tail -n 15 "$LOGFILE"; }
+  [ -s "$LOGFILE" ] && { say 'Últimas linhas do log:'; tail -n 20 "$LOGFILE"; }
 }
 help() {
   cat <<'EOF'
 Uso:
   orbis-tv                  pergunta o site e abre em tela cheia
   orbis-tv exemplo.com      abre o site informado
-  orbis-tv --prepare        instala/repara o ambiente necessário
+  orbis-tv --prepare        instala/repara vídeo + teclado + touchpad
   orbis-tv --status         mostra diagnóstico
+
+Segurança:
+  antes de abrir o Firefox, o script confirma que Xorg enxerga
+  teclado e mouse/touchpad. Se faltar algum, fecha o X e volta ao terminal.
 
 Variável opcional:
   ORBIS_TV_MODE=640x480 orbis-tv exemplo.com
