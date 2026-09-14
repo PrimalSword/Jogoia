@@ -8,6 +8,7 @@ LAST_URL="$STATE_DIR/last-url"
 LOGFILE="/var/log/orbis-tv.log"
 DEFAULT_MODE="${ORBIS_TV_MODE:-800x600}"
 DISPLAY_NUM="${ORBIS_TV_DISPLAY:-:0}"
+EXTERNAL_ONLY="${ORBIS_TV_EXTERNAL_ONLY:-1}"
 
 TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev eudev eudev-openrc alpine-conf"
 
@@ -76,8 +77,6 @@ ensure_input_stack() {
     apk add --force-broken-world $missing
   fi
 
-  # O Alpine mínimo usa mdev. O Xorg/libinput precisa de eudev para
-  # enumerar corretamente teclado, mouse e touchpad.
   if command -v setup-devd >/dev/null 2>&1; then
     if ! command -v udevadm >/dev/null 2>&1 || ! rc-service eudev status >/dev/null 2>&1; then
       say 'Configurando eudev para os dispositivos de entrada...'
@@ -105,15 +104,7 @@ ensure_input_stack() {
   fi
   write_input_config
 }
-prepare() {
-  need_root
-  ensure_repositories
-  if ! runtime_ready; then
-    say 'ORBIS TV  •  preparando ambiente gráfico mínimo'
-    say 'Instalando Xorg, Firefox ESR, vídeo Intel legado e suporte completo de teclado/touchpad.'
-    apk update
-    apk add --force-broken-world $TV_PACKAGES
-  fi
+write_firefox_profile() {
   mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
   chmod 700 "$STATE_DIR" "$PROFILE_DIR" 2>/dev/null || true
   cat > "$PROFILE_DIR/user.js" <<'EOF'
@@ -128,11 +119,57 @@ user_pref("datareporting.healthreport.uploadEnabled", false);
 user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("browser.discovery.enabled", false);
 user_pref("browser.search.suggest.enabled", false);
+user_pref("browser.urlbar.speculativeConnect.enabled", false);
+user_pref("network.prefetch-next", false);
+user_pref("network.dns.disablePrefetch", true);
 user_pref("media.autoplay.default", 0);
+user_pref("dom.ipc.processCount", 1);
+user_pref("dom.ipc.processCount.webIsolated", 1);
+user_pref("browser.tabs.unloadOnLowMemory", true);
+user_pref("image.animation_mode", "once");
 EOF
+}
+enable_performance_mode() {
+  # O Atom antigo sofre mais com pico de memória que com armazenamento.
+  # Cria swap comprimida em RAM se zram estiver disponível.
+  if command -v modprobe >/dev/null 2>&1; then modprobe zram 2>>"$LOGFILE" || true; fi
+  if [ -b /dev/zram0 ] && ! grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+    mem_kb="$(awk '/MemTotal/ {print $2; exit}' /proc/meminfo 2>/dev/null || printf 0)"
+    size_bytes=$((mem_kb * 1024 / 4))
+    [ "$size_bytes" -gt 536870912 ] && size_bytes=536870912
+    [ "$size_bytes" -lt 134217728 ] && size_bytes=134217728
+    if command -v zramctl >/dev/null 2>&1; then
+      zramctl /dev/zram0 --reset >/dev/null 2>&1 || true
+      zramctl /dev/zram0 --size "$size_bytes" >/dev/null 2>&1 || true
+    elif [ -w /sys/block/zram0/disksize ]; then
+      printf '%s\n' "$size_bytes" > /sys/block/zram0/disksize 2>/dev/null || true
+    fi
+    if [ "$(cat /sys/block/zram0/disksize 2>/dev/null || printf 0)" -gt 0 ] 2>/dev/null; then
+      mkswap /dev/zram0 >/dev/null 2>&1 || true
+      swapon -p 100 /dev/zram0 >/dev/null 2>&1 || true
+    fi
+  fi
+
+  # Mantém o Atom no clock máximo enquanto o modo TV estiver aberto.
+  for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [ -w "$gov" ] || continue
+    printf '%s\n' performance > "$gov" 2>/dev/null || true
+  done
+}
+prepare() {
+  need_root
+  ensure_repositories
+  if ! runtime_ready; then
+    say 'ORBIS TV  •  preparando ambiente gráfico mínimo'
+    say 'Instalando Xorg, Firefox ESR, vídeo Intel legado e suporte completo de teclado/touchpad.'
+    apk update
+    apk add --force-broken-world $TV_PACKAGES
+  fi
+  write_firefox_profile
   ensure_video_stack
   ensure_input_stack
-  say 'Modo TV preparado; vídeo e entrada verificados.'
+  enable_performance_mode
+  say 'Modo TV preparado; vídeo, entrada e otimizações verificados.'
 }
 normalize_url() {
   case "$1" in
@@ -157,6 +194,12 @@ configure_display() {
   out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(VGA|HDMI|DP|DVI)' | head -n1 || true)"
   [ -n "$out" ] || out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1; exit}' || true)"
   [ -n "$out" ] || return 0
+
+  if [ "$EXTERNAL_ONLY" = "1" ]; then
+    for internal in $(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(LVDS|eDP|DSI)' || true); do
+      [ "$internal" = "$out" ] || xrandr --output "$internal" --off >/dev/null 2>&1 || true
+    done
+  fi
 
   if xrandr --query 2>/dev/null | awk -v o="$out" -v m="$mode" '
       $1==o && $2=="connected" {inside=1; next}
@@ -222,6 +265,8 @@ run_tv() {
   runtime_ready || prepare
   ensure_video_stack
   ensure_input_stack
+  write_firefox_profile
+  enable_performance_mode
   mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
   url="$(choose_url "${1:-}")"
   printf '%s\n' "$url" > "$LAST_URL"
@@ -234,6 +279,7 @@ run_tv() {
 
   say "Abrindo: $url"
   say "Modo de vídeo preferido: $DEFAULT_MODE"
+  [ "$EXTERNAL_ONLY" = "1" ] && say 'Saída externa exclusiva: a tela do notebook será desligada no Xorg.'
   command -v chvt >/dev/null 2>&1 && chvt 1 2>/dev/null || true
   start_xorg
   configure_display
@@ -251,9 +297,9 @@ run_tv() {
   say 'Para sair do navegador: Alt+F4 ou Ctrl+Q.'
   browser="$(command -v firefox-esr || command -v firefox)"
   if command -v dbus-run-session >/dev/null 2>&1; then
-    dbus-run-session -- "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url" >>"$LOGFILE" 2>&1 || code=$?
+    nice -n -5 dbus-run-session -- "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url" >>"$LOGFILE" 2>&1 || code=$?
   else
-    "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url" >>"$LOGFILE" 2>&1 || code=$?
+    nice -n -5 "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url" >>"$LOGFILE" 2>&1 || code=$?
   fi
   code="${code:-0}"
   stop_xorg
@@ -267,6 +313,8 @@ status() {
   printf 'eudev: '; command -v udevadm >/dev/null 2>&1 && say 'instalado' || say 'ausente'
   printf 'i915: '; lsmod 2>/dev/null | grep -q '^i915' && say 'carregado' || say 'não carregado'
   printf 'psmouse: '; lsmod 2>/dev/null | grep -q '^psmouse' && say 'carregado' || say 'não carregado'
+  printf 'zram: '; grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null && say 'ativa' || say 'inativa/indisponível'
+  printf 'saída externa exclusiva: %s\n' "$EXTERNAL_ONLY"
   for pkg in xf86-video-intel xf86-video-vesa xf86-video-fbdev xf86-input-libinput xf86-input-evdev xf86-input-synaptics xinput; do
     apk info -e "$pkg" >/dev/null 2>&1 && printf '%s: instalado\n' "$pkg" || printf '%s: ausente\n' "$pkg"
   done
@@ -283,12 +331,18 @@ Uso:
   orbis-tv --prepare        instala/repara vídeo + teclado + touchpad
   orbis-tv --status         mostra diagnóstico
 
-Segurança:
-  antes de abrir o Firefox, o script confirma que Xorg enxerga
-  teclado e mouse/touchpad. Se faltar algum, fecha o X e volta ao terminal.
+Modo TV:
+  por padrão, quando existe VGA/HDMI externo, a tela interna é desligada.
+  Assim o notebook pode ficar fechado enquanto a TV continua ativa,
+  desde que a BIOS não imponha suspensão física ao fechar a tampa.
 
-Variável opcional:
+Desempenho:
+  ativa zram quando disponível, reduz processos do Firefox e tenta manter
+  o processador em modo performance durante a sessão.
+
+Variáveis opcionais:
   ORBIS_TV_MODE=640x480 orbis-tv exemplo.com
+  ORBIS_TV_EXTERNAL_ONLY=0 orbis-tv exemplo.com
 EOF
 }
 
