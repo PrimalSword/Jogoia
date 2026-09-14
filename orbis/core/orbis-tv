@@ -9,7 +9,7 @@ LOGFILE="/var/log/orbis-tv.log"
 DEFAULT_MODE="${ORBIS_TV_MODE:-800x600}"
 DISPLAY_NUM="${ORBIS_TV_DISPLAY:-:0}"
 
-TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-video-intel xf86-video-vesa xf86-video-fbdev"
+TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev"
 
 say() { printf '%s\n' "$*"; }
 need_root() {
@@ -38,8 +38,23 @@ ensure_video_stack() {
     apk update
     apk add --force-broken-world $missing
   fi
+  command -v modprobe >/dev/null 2>&1 && modprobe i915 2>>"$LOGFILE" || true
+}
+ensure_input_stack() {
+  ensure_repositories
+  missing=""
+  for pkg in xf86-input-libinput xf86-input-evdev xf86-input-synaptics xinput; do
+    apk info -e "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+  done
+  if [ -n "$missing" ]; then
+    say "Instalando suporte de mouse/touchpad:$missing"
+    apk update
+    apk add --force-broken-world $missing
+  fi
   if command -v modprobe >/dev/null 2>&1; then
-    modprobe i915 2>>"$LOGFILE" || true
+    modprobe psmouse 2>>"$LOGFILE" || true
+    modprobe usbhid 2>>"$LOGFILE" || true
+    modprobe hid_generic 2>>"$LOGFILE" || true
   fi
 }
 prepare() {
@@ -48,11 +63,12 @@ prepare() {
   if runtime_ready; then
     mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
     ensure_video_stack
-    say 'Modo TV já está instalado; drivers de vídeo verificados.'
+    ensure_input_stack
+    say 'Modo TV já está instalado; vídeo, mouse e touchpad verificados.'
     return 0
   fi
   say 'ORBIS TV  •  preparando ambiente gráfico mínimo'
-  say 'Instalando Xorg, Openbox, Firefox ESR e drivers para vídeo Intel legado.'
+  say 'Instalando Xorg, Openbox, Firefox ESR, vídeo Intel legado e suporte de mouse/touchpad.'
   apk update
   apk add --force-broken-world $TV_PACKAGES
   mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
@@ -72,6 +88,7 @@ user_pref("browser.search.suggest.enabled", false);
 user_pref("media.autoplay.default", 0);
 EOF
   ensure_video_stack
+  ensure_input_stack
   say 'Modo TV preparado.'
 }
 normalize_url() {
@@ -112,6 +129,7 @@ start_xorg() {
   : > "$LOGFILE" 2>/dev/null || true
   rm -f /tmp/.X0-lock 2>/dev/null || true
   ensure_video_stack
+  ensure_input_stack
   Xorg "$DISPLAY_NUM" vt1 -nolisten tcp >>"$LOGFILE" 2>&1 &
   XORG_PID=$!
   export XORG_PID
@@ -123,7 +141,7 @@ start_xorg() {
     sleep 0.2
   done
   say 'Xorg não iniciou corretamente.'
-  grep -E '\(EE\)|\(WW\)|driver|Driver|screen|Screen|i915|intel|vesa|fbdev' "$LOGFILE" 2>/dev/null | tail -n 50 || tail -n 50 "$LOGFILE" 2>/dev/null || true
+  grep -E '\(EE\)|\(WW\)|driver|Driver|screen|Screen|i915|intel|vesa|fbdev|mouse|Mouse|touchpad|Touchpad|synaptics|libinput|evdev' "$LOGFILE" 2>/dev/null | tail -n 60 || tail -n 60 "$LOGFILE" 2>/dev/null || true
   kill "$XORG_PID" 2>/dev/null || true
   wait "$XORG_PID" 2>/dev/null || true
   return 1
@@ -138,6 +156,7 @@ run_tv() {
   need_root
   runtime_ready || prepare
   ensure_video_stack
+  ensure_input_stack
   mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
   url="$(choose_url "${1:-}")"
   printf '%s\n' "$url" > "$LAST_URL"
@@ -174,11 +193,15 @@ status() {
   say 'ORBIS TV  •  STATUS'
   if runtime_ready; then say 'Runtime gráfico: instalado'; else say 'Runtime gráfico: ausente'; fi
   printf 'i915: '; lsmod 2>/dev/null | grep -q '^i915' && say 'carregado' || say 'não carregado'
-  for pkg in xf86-video-intel xf86-video-vesa xf86-video-fbdev; do apk info -e "$pkg" >/dev/null 2>&1 && printf '%s: instalado\n' "$pkg" || printf '%s: ausente\n' "$pkg"; done
+  printf 'psmouse: '; lsmod 2>/dev/null | grep -q '^psmouse' && say 'carregado' || say 'não carregado'
+  for pkg in xf86-video-intel xf86-video-vesa xf86-video-fbdev xf86-input-libinput xf86-input-evdev xf86-input-synaptics; do
+    apk info -e "$pkg" >/dev/null 2>&1 && printf '%s: instalado\n' "$pkg" || printf '%s: ausente\n' "$pkg"
+  done
+  if [ -n "${DISPLAY:-}" ] && command -v xinput >/dev/null 2>&1; then xinput list 2>/dev/null || true; fi
   if command -v firefox-esr >/dev/null 2>&1; then firefox-esr --version 2>/dev/null || true; elif command -v firefox >/dev/null 2>&1; then firefox --version 2>/dev/null || true; fi
   [ -r "$LAST_URL" ] && printf 'Último site: %s\n' "$(cat "$LAST_URL")" || true
   printf 'Modo preferido: %s\n' "$DEFAULT_MODE"
-  [ -s "$LOGFILE" ] && { say 'Últimas linhas do log:'; tail -n 12 "$LOGFILE"; }
+  [ -s "$LOGFILE" ] && { say 'Últimas linhas do log:'; tail -n 15 "$LOGFILE"; }
 }
 help() {
   cat <<'EOF'
