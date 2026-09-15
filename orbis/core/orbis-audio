@@ -26,19 +26,49 @@ load_modules(){
   modprobe snd_intel8x0 2>>"$LOGFILE" || true
   modprobe snd_pcm 2>>"$LOGFILE" || true
 }
-unmute(){
-  command -v alsactl >/dev/null 2>&1 && alsactl init >/dev/null 2>&1 || true
+disable_audio_powersave(){
+  # Em codecs HDA antigos, ligar/desligar o codec agressivamente pode gerar
+  # estalos/ruído na saída analógica. Durante o modo TV mantemos o codec ativo.
+  [ -w /sys/module/snd_hda_intel/parameters/power_save ] && printf '0\n' > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || true
+  [ -w /sys/module/snd_hda_intel/parameters/power_save_controller ] && printf 'N\n' > /sys/module/snd_hda_intel/parameters/power_save_controller 2>/dev/null || true
+}
+set_output_levels(){
   command -v amixer >/dev/null 2>&1 || return 0
-  for ctl in Master PCM Speaker Headphone Front; do
-    amixer -q sset "$ctl" 85% unmute >/dev/null 2>&1 || true
-  done
+  # Sinal forte no P2 reduz a necessidade de amplificar ruído depois no VGA2AV/TV.
+  amixer -q sset Master 85% unmute >/dev/null 2>&1 || true
+  amixer -q sset PCM 100% unmute >/dev/null 2>&1 || true
+  amixer -q sset Headphone 90% unmute >/dev/null 2>&1 || true
+  amixer -q sset Front 90% unmute >/dev/null 2>&1 || true
+  amixer -q sset Speaker mute >/dev/null 2>&1 || true
   amixer -q sset 'Auto-Mute Mode' Disabled >/dev/null 2>&1 || true
 }
-prepare(){
+mute_noise_sources(){
+  command -v amixer >/dev/null 2>&1 || return 0
+  # Entradas e loopbacks analógicos abertos são fontes comuns de BZZ em notebook antigo.
+  for ctl in \
+    'Mic' 'Internal Mic' 'Front Mic' 'Rear Mic' \
+    'Mic Boost' 'Internal Mic Boost' 'Front Mic Boost' \
+    'Capture' 'Line' 'Line In' 'Aux' 'CD' \
+    'Beep' 'PC Speaker' 'Loopback'; do
+    amixer -q sset "$ctl" 0% mute >/dev/null 2>&1 || \
+      amixer -q sset "$ctl" mute >/dev/null 2>&1 || true
+  done
+  amixer -q sset 'Loopback Mixing' Disabled >/dev/null 2>&1 || true
+  amixer -q sset 'Analog Loopback' Disabled >/dev/null 2>&1 || true
+}
+clean_audio(){
   need_root
   ensure_packages
   load_modules
-  unmute
+  command -v alsactl >/dev/null 2>&1 && alsactl init >/dev/null 2>&1 || true
+  disable_audio_powersave
+  mute_noise_sources
+  set_output_levels
+  command -v alsactl >/dev/null 2>&1 && alsactl store >/dev/null 2>&1 || true
+  say 'Perfil anti-BZZ aplicado: P2 priorizado, entradas/loopbacks mutados e power-save de áudio desativado.'
+}
+prepare(){
+  clean_audio
   if [ -r /proc/asound/cards ] && grep -Eq '^[[:space:]]*[0-9]+[[:space:]]+\[' /proc/asound/cards; then
     say 'Áudio ALSA preparado.'
     cat /proc/asound/cards
@@ -53,10 +83,17 @@ status(){
   say ''
   command -v aplay >/dev/null 2>&1 && aplay -l 2>/dev/null || true
   say ''
-  command -v amixer >/dev/null 2>&1 && amixer sget Master 2>/dev/null || true
+  if command -v amixer >/dev/null 2>&1; then
+    for ctl in Master PCM Headphone Speaker Mic 'Mic Boost' Capture Line Beep; do
+      amixer sget "$ctl" 2>/dev/null | sed -n '1,8p' || true
+    done
+  fi
+  if [ -r /sys/module/snd_hda_intel/parameters/power_save ]; then
+    printf 'snd_hda_intel power_save: %s\n' "$(cat /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || printf '?')"
+  fi
 }
 test_audio(){
-  prepare
+  clean_audio
   say ''
   say 'Teste estéreo: você deve ouvir LEFT e RIGHT/tons alternados.'
   speaker-test -c 2 -t wav -l 1 || speaker-test -c 2 -t sine -l 1 || true
@@ -64,19 +101,27 @@ test_audio(){
 help(){
   cat <<'EOF'
 Uso:
-  orbis-audio --prepare   instala ALSA, carrega o driver e desmuta a saída
-  orbis-audio --test      faz o preparo e toca um teste estéreo
-  orbis-audio --status    mostra placas e saídas detectadas
+  orbis-audio --prepare   instala ALSA e aplica o perfil anti-BZZ
+  orbis-audio --clean     aplica o perfil anti-BZZ para saída P2
+  orbis-audio --test      aplica o perfil e toca um teste estéreo
+  orbis-audio --status    mostra placas, saídas e controles relevantes
+
+Perfil anti-BZZ:
+  prioriza PCM/Headphone, muta microfones, boosts, captura, line-in, beep e
+  loopbacks quando existirem e desativa o power-save do snd_hda_intel.
 
 IMPORTANTE:
-  VGA não transporta áudio. O som precisa sair fisicamente pela saída de
+  VGA não transporta áudio. O som deve sair fisicamente pela saída de
   fones/P2 do Itautec para a entrada AUDIO IN do VGA2AV, ou diretamente para
   os RCA vermelho/branco da TV com um cabo P2 -> 2 RCA.
+  Se o BZZ variar com a luminosidade da imagem mesmo com este perfil, a parte
+  restante do ruído provavelmente está sendo criada no VGA2AV/alimentação.
 EOF
 }
 
 case "${1:-}" in
   --prepare|prepare) prepare ;;
+  --clean|clean) clean_audio ;;
   --test|test) test_audio ;;
   --status|status) status ;;
   --help|-h|help|'') help ;;
