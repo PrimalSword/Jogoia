@@ -27,14 +27,11 @@ load_modules(){
   modprobe snd_pcm 2>>"$LOGFILE" || true
 }
 disable_audio_powersave(){
-  # Em codecs HDA antigos, ligar/desligar o codec agressivamente pode gerar
-  # estalos/ruído na saída analógica. Durante o modo TV mantemos o codec ativo.
   [ -w /sys/module/snd_hda_intel/parameters/power_save ] && printf '0\n' > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || true
   [ -w /sys/module/snd_hda_intel/parameters/power_save_controller ] && printf 'N\n' > /sys/module/snd_hda_intel/parameters/power_save_controller 2>/dev/null || true
 }
 set_output_levels(){
   command -v amixer >/dev/null 2>&1 || return 0
-  # Sinal forte no P2 reduz a necessidade de amplificar ruído depois no VGA2AV/TV.
   amixer -q sset Master 85% unmute >/dev/null 2>&1 || true
   amixer -q sset PCM 100% unmute >/dev/null 2>&1 || true
   amixer -q sset Headphone 90% unmute >/dev/null 2>&1 || true
@@ -44,7 +41,6 @@ set_output_levels(){
 }
 mute_noise_sources(){
   command -v amixer >/dev/null 2>&1 || return 0
-  # Entradas e loopbacks analógicos abertos são fontes comuns de BZZ em notebook antigo.
   for ctl in \
     'Mic' 'Internal Mic' 'Front Mic' 'Rear Mic' \
     'Mic Boost' 'Internal Mic Boost' 'Front Mic Boost' \
@@ -56,6 +52,11 @@ mute_noise_sources(){
   amixer -q sset 'Loopback Mixing' Disabled >/dev/null 2>&1 || true
   amixer -q sset 'Analog Loopback' Disabled >/dev/null 2>&1 || true
 }
+apply_tv_boost(){
+  if [ -x /usr/local/bin/orbis-boost ]; then
+    /usr/local/bin/orbis-boost --runtime >>"$LOGFILE" 2>&1 || true
+  fi
+}
 clean_audio(){
   need_root
   ensure_packages
@@ -65,6 +66,7 @@ clean_audio(){
   mute_noise_sources
   set_output_levels
   command -v alsactl >/dev/null 2>&1 && alsactl store >/dev/null 2>&1 || true
+  apply_tv_boost
   say 'Perfil anti-BZZ aplicado: P2 priorizado, entradas/loopbacks mutados e power-save de áudio desativado.'
 }
 prepare(){
@@ -91,6 +93,10 @@ status(){
   if [ -r /sys/module/snd_hda_intel/parameters/power_save ]; then
     printf 'snd_hda_intel power_save: %s\n' "$(cat /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || printf '?')"
   fi
+  if [ -x /usr/local/bin/orbis-boost ]; then
+    say ''
+    /usr/local/bin/orbis-boost --status 2>/dev/null || true
+  fi
 }
 test_audio(){
   clean_audio
@@ -99,16 +105,20 @@ test_audio(){
   speaker-test -c 2 -t wav -l 1 || speaker-test -c 2 -t sine -l 1 || true
 }
 help(){
-  cat <<'EOF'
+  cat <<'EOF_HELP'
 Uso:
   orbis-audio --prepare   instala ALSA e aplica o perfil anti-BZZ
   orbis-audio --clean     aplica o perfil anti-BZZ para saída P2
   orbis-audio --test      aplica o perfil e toca um teste estéreo
-  orbis-audio --status    mostra placas, saídas e controles relevantes
+  orbis-audio --status    mostra áudio e, quando disponível, o Orbis Boost
 
 Perfil anti-BZZ:
   prioriza PCM/Headphone, muta microfones, boosts, captura, line-in, beep e
   loopbacks quando existirem e desativa o power-save do snd_hda_intel.
+
+Modo TV:
+  quando o orbis-boost estiver instalado, este comando também aplica o perfil
+  de vídeo leve, cache em RAM e AdBlock reforçado antes de abrir o Firefox.
 
 IMPORTANTE:
   VGA não transporta áudio. O som deve sair fisicamente pela saída de
@@ -116,7 +126,7 @@ IMPORTANTE:
   os RCA vermelho/branco da TV com um cabo P2 -> 2 RCA.
   Se o BZZ variar com a luminosidade da imagem mesmo com este perfil, a parte
   restante do ruído provavelmente está sendo criada no VGA2AV/alimentação.
-EOF
+EOF_HELP
 }
 
 case "${1:-}" in
