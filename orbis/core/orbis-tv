@@ -10,7 +10,7 @@ DEFAULT_MODE="${ORBIS_TV_MODE:-800x600}"
 DISPLAY_NUM="${ORBIS_TV_DISPLAY:-:0}"
 EXTERNAL_ONLY="${ORBIS_TV_EXTERNAL_ONLY:-1}"
 
-TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev eudev eudev-openrc alpine-conf"
+TV_PACKAGES="xorg-server openbox firefox-esr ublock-origin dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev eudev eudev-openrc alpine-conf"
 
 say() { printf '%s\n' "$*"; }
 need_root() {
@@ -28,6 +28,17 @@ runtime_ready() {
   command -v xrandr >/dev/null 2>&1 && \
   command -v xinput >/dev/null 2>&1 && \
   { command -v firefox-esr >/dev/null 2>&1 || command -v firefox >/dev/null 2>&1; }
+}
+ensure_adblock() {
+  ensure_repositories
+  apk info -e ublock-origin >/dev/null 2>&1 && return 0
+  say 'ORBIS TV  •  instalando uBlock Origin para bloquear anúncios...'
+  if apk update >/dev/null 2>&1 && apk add --force-broken-world ublock-origin; then
+    say 'uBlock Origin instalado. O Firefox abrirá com bloqueio de anúncios.'
+    return 0
+  fi
+  say 'Aviso: não foi possível instalar o uBlock Origin agora; o modo TV continuará sem ele.'
+  return 0
 }
 ensure_video_stack() {
   ensure_repositories
@@ -161,15 +172,16 @@ prepare() {
   ensure_repositories
   if ! runtime_ready; then
     say 'ORBIS TV  •  preparando ambiente gráfico mínimo'
-    say 'Instalando Xorg, Firefox ESR, vídeo Intel legado e suporte completo de teclado/touchpad.'
+    say 'Instalando Xorg, Firefox ESR, uBlock Origin, vídeo Intel legado e suporte completo de teclado/touchpad.'
     apk update
     apk add --force-broken-world $TV_PACKAGES
   fi
+  ensure_adblock
   write_firefox_profile
   ensure_video_stack
   ensure_input_stack
   enable_performance_mode
-  say 'Modo TV preparado; vídeo, entrada e otimizações verificados.'
+  say 'Modo TV preparado; vídeo, entrada, AdBlock e otimizações verificados.'
 }
 normalize_url() {
   case "$1" in
@@ -263,6 +275,7 @@ stop_xorg() {
 run_tv() {
   need_root
   runtime_ready || prepare
+  ensure_adblock
   ensure_video_stack
   ensure_input_stack
   write_firefox_profile
@@ -310,6 +323,7 @@ run_tv() {
 status() {
   say 'ORBIS TV  •  STATUS'
   if runtime_ready; then say 'Runtime gráfico: instalado'; else say 'Runtime gráfico: incompleto'; fi
+  printf 'uBlock Origin: '; apk info -e ublock-origin >/dev/null 2>&1 && say 'instalado' || say 'ausente'
   printf 'eudev: '; command -v udevadm >/dev/null 2>&1 && say 'instalado' || say 'ausente'
   printf 'i915: '; lsmod 2>/dev/null | grep -q '^i915' && say 'carregado' || say 'não carregado'
   printf 'psmouse: '; lsmod 2>/dev/null | grep -q '^psmouse' && say 'carregado' || say 'não carregado'
@@ -328,13 +342,17 @@ help() {
 Uso:
   orbis-tv                  pergunta o site e abre em tela cheia
   orbis-tv exemplo.com      abre o site informado
-  orbis-tv --prepare        instala/repara vídeo + teclado + touchpad
+  orbis-tv --prepare        instala/repara vídeo + teclado + touchpad + AdBlock
   orbis-tv --status         mostra diagnóstico
 
 Modo TV:
   por padrão, quando existe VGA/HDMI externo, a tela interna é desligada.
   Assim o notebook pode ficar fechado enquanto a TV continua ativa,
   desde que a BIOS não imponha suspensão física ao fechar a tampa.
+
+Bloqueio de anúncios:
+  o Orbis instala e mantém o uBlock Origin pelo repositório oficial do Alpine.
+  Se ele ainda não estiver presente, será instalado antes de abrir o Firefox.
 
 Desempenho:
   ativa zram quando disponível, reduz processos do Firefox e tenta manter
