@@ -9,8 +9,10 @@ LOGFILE="/var/log/orbis-tv.log"
 DEFAULT_MODE="${ORBIS_TV_MODE:-800x600}"
 DISPLAY_NUM="${ORBIS_TV_DISPLAY:-:0}"
 EXTERNAL_ONLY="${ORBIS_TV_EXTERNAL_ONLY:-1}"
+UBLOCK_ID="uBlock0@raymondhill.net"
+UBLOCK_URL="https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
 
-TV_PACKAGES="xorg-server openbox firefox-esr ublock-origin dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev eudev eudev-openrc alpine-conf"
+TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev eudev eudev-openrc alpine-conf"
 
 say() { printf '%s\n' "$*"; }
 need_root() {
@@ -29,16 +31,81 @@ runtime_ready() {
   command -v xinput >/dev/null 2>&1 && \
   { command -v firefox-esr >/dev/null 2>&1 || command -v firefox >/dev/null 2>&1; }
 }
-ensure_adblock() {
-  ensure_repositories
-  apk info -e ublock-origin >/dev/null 2>&1 && return 0
-  say 'ORBIS TV  •  instalando uBlock Origin para bloquear anúncios...'
-  if apk update >/dev/null 2>&1 && apk add --force-broken-world ublock-origin; then
-    say 'uBlock Origin instalado. O Firefox abrirá com bloqueio de anúncios.'
+write_adblock_policy() {
+  browser="$(command -v firefox-esr 2>/dev/null || command -v firefox 2>/dev/null || true)"
+  browser_dir=""
+  if [ -n "$browser" ]; then
+    real_browser="$(readlink -f "$browser" 2>/dev/null || printf '%s' "$browser")"
+    browser_dir="$(dirname "$real_browser")"
+  fi
+
+  wrote=0
+  for dir in "$browser_dir" /usr/lib/firefox-esr /usr/lib/firefox /usr/lib/firefox-*; do
+    [ -n "$dir" ] || continue
+    [ -d "$dir" ] || continue
+    mkdir -p "$dir/distribution"
+    cat > "$dir/distribution/policies.json" <<EOF
+{
+  "policies": {
+    "ExtensionSettings": {
+      "*": {"installation_mode": "allowed"},
+      "$UBLOCK_ID": {
+        "installation_mode": "force_installed",
+        "install_url": "$UBLOCK_URL"
+      }
+    }
+  }
+}
+EOF
+    wrote=1
+  done
+  [ "$wrote" -eq 1 ] && return 0
+  say 'Aviso: não encontrei o diretório do Firefox para gravar a política do uBlock.'
+  return 0
+}
+install_ublock_in_profile() {
+  mkdir -p "$PROFILE_DIR/extensions"
+  target="$PROFILE_DIR/extensions/$UBLOCK_ID.xpi"
+  [ -s "$target" ] && return 0
+
+  pkg_xpi=""
+  if apk info -e ublock-origin >/dev/null 2>&1; then
+    pkg_xpi="$(apk info -L ublock-origin 2>/dev/null | grep -E '\.xpi$' | head -n1 || true)"
+  fi
+  if [ -n "$pkg_xpi" ] && [ -s "$pkg_xpi" ]; then
+    cp "$pkg_xpi" "$target"
+    chmod 0644 "$target" 2>/dev/null || true
     return 0
   fi
-  say 'Aviso: não foi possível instalar o uBlock Origin agora; o modo TV continuará sem ele.'
+
+  if command -v curl >/dev/null 2>&1; then
+    tmp="$target.tmp.$$"
+    if curl --fail --location --retry 2 --connect-timeout 10 --output "$tmp" "$UBLOCK_URL" >/dev/null 2>&1; then
+      mv -f "$tmp" "$target"
+      chmod 0644 "$target" 2>/dev/null || true
+      return 0
+    fi
+    rm -f "$tmp"
+  fi
   return 0
+}
+ensure_adblock() {
+  ensure_repositories
+  mkdir -p "$PROFILE_DIR"
+  if ! apk info -e ublock-origin >/dev/null 2>&1; then
+    say 'ORBIS TV  •  preparando bloqueador de anúncios...'
+    apk update >/dev/null 2>&1 || true
+    apk add --force-broken-world ublock-origin >/dev/null 2>&1 || true
+  fi
+  # O pacote sozinho nem sempre é habilitado em perfil customizado/kiosk.
+  # Por isso fazemos duas garantias: política global force_installed + XPI no perfil.
+  write_adblock_policy
+  install_ublock_in_profile
+}
+ensure_audio_clean() {
+  if [ -x /usr/local/bin/orbis-audio ]; then
+    /usr/local/bin/orbis-audio --clean >>"$LOGFILE" 2>&1 || true
+  fi
 }
 ensure_video_stack() {
   ensure_repositories
@@ -138,6 +205,10 @@ user_pref("dom.ipc.processCount", 1);
 user_pref("dom.ipc.processCount.webIsolated", 1);
 user_pref("browser.tabs.unloadOnLowMemory", true);
 user_pref("image.animation_mode", "once");
+user_pref("extensions.autoDisableScopes", 0);
+user_pref("extensions.enabledScopes", 15);
+user_pref("extensions.installDistroAddons", true);
+user_pref("extensions.update.enabled", true);
 EOF
 }
 enable_performance_mode() {
@@ -172,16 +243,17 @@ prepare() {
   ensure_repositories
   if ! runtime_ready; then
     say 'ORBIS TV  •  preparando ambiente gráfico mínimo'
-    say 'Instalando Xorg, Firefox ESR, uBlock Origin, vídeo Intel legado e suporte completo de teclado/touchpad.'
+    say 'Instalando Xorg, Firefox ESR, vídeo Intel legado e suporte completo de teclado/touchpad.'
     apk update
     apk add --force-broken-world $TV_PACKAGES
   fi
-  ensure_adblock
   write_firefox_profile
+  ensure_adblock
   ensure_video_stack
   ensure_input_stack
+  ensure_audio_clean
   enable_performance_mode
-  say 'Modo TV preparado; vídeo, entrada, AdBlock e otimizações verificados.'
+  say 'Modo TV preparado; vídeo, entrada, bloqueador e perfil anti-BZZ verificados.'
 }
 normalize_url() {
   case "$1" in
@@ -275,10 +347,11 @@ stop_xorg() {
 run_tv() {
   need_root
   runtime_ready || prepare
+  write_firefox_profile
   ensure_adblock
   ensure_video_stack
   ensure_input_stack
-  write_firefox_profile
+  ensure_audio_clean
   enable_performance_mode
   mkdir -p "$STATE_DIR" "$PROFILE_DIR" /var/log
   url="$(choose_url "${1:-}")"
@@ -323,7 +396,10 @@ run_tv() {
 status() {
   say 'ORBIS TV  •  STATUS'
   if runtime_ready; then say 'Runtime gráfico: instalado'; else say 'Runtime gráfico: incompleto'; fi
-  printf 'uBlock Origin: '; apk info -e ublock-origin >/dev/null 2>&1 && say 'instalado' || say 'ausente'
+  printf 'uBlock pacote: '; apk info -e ublock-origin >/dev/null 2>&1 && say 'instalado' || say 'ausente (política/XPI ainda podem ativá-lo)'
+  printf 'uBlock no perfil: '; [ -s "$PROFILE_DIR/extensions/$UBLOCK_ID.xpi" ] && say 'presente' || say 'ausente'
+  printf 'uBlock política: '; grep -Rqs 'force_installed' /usr/lib/firefox*/distribution/policies.json 2>/dev/null && say 'forçada' || say 'não encontrada'
+  printf 'perfil anti-BZZ: '; [ -x /usr/local/bin/orbis-audio ] && say 'disponível' || say 'orbis-audio ausente'
   printf 'eudev: '; command -v udevadm >/dev/null 2>&1 && say 'instalado' || say 'ausente'
   printf 'i915: '; lsmod 2>/dev/null | grep -q '^i915' && say 'carregado' || say 'não carregado'
   printf 'psmouse: '; lsmod 2>/dev/null | grep -q '^psmouse' && say 'carregado' || say 'não carregado'
@@ -342,7 +418,7 @@ help() {
 Uso:
   orbis-tv                  pergunta o site e abre em tela cheia
   orbis-tv exemplo.com      abre o site informado
-  orbis-tv --prepare        instala/repara vídeo + teclado + touchpad + AdBlock
+  orbis-tv --prepare        instala/repara vídeo, entrada, AdBlock e áudio
   orbis-tv --status         mostra diagnóstico
 
 Modo TV:
@@ -351,8 +427,12 @@ Modo TV:
   desde que a BIOS não imponha suspensão física ao fechar a tampa.
 
 Bloqueio de anúncios:
-  o Orbis instala e mantém o uBlock Origin pelo repositório oficial do Alpine.
-  Se ele ainda não estiver presente, será instalado antes de abrir o Firefox.
+  o Orbis garante o uBlock Origin por política force_installed do Firefox e,
+  como redundância, mantém o XPI assinado dentro do perfil kiosk.
+
+Áudio:
+  antes de abrir o navegador, o Orbis aplica o perfil anti-BZZ: prioriza P2,
+  muta entradas/loopbacks analógicos e desativa power-save do codec HDA.
 
 Desempenho:
   ativa zram quando disponível, reduz processos do Firefox e tenta manter
