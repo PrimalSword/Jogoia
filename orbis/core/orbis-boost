@@ -9,11 +9,18 @@ UBLOCK_ID="uBlock0@raymondhill.net"
 UBLOCK_URL="https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
 UBLOCK_XPI="$SHARE_DIR/ublock-origin.xpi"
 UBLOCK_STAMP="$STATE_DIR/ublock-origin.sha256"
+UBLOCK_READY="$STATE_DIR/ublock-origin.ready"
+VIDEO_PREP_STAMP="$STATE_DIR/video-stack.prepared"
+COMPAT_FILE="$STATE_DIR/compat-webm"
 FIREFOX_APP_ID="{ec8030f7-c20a-464f-9b0e-13a3a9e97384}"
 
 say(){ printf '%s\n' "$*"; }
 need_root(){ [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }; }
 log(){ mkdir -p /var/log; printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true; }
+
+firefox_cmd(){
+  command -v firefox-esr 2>/dev/null || command -v firefox 2>/dev/null || true
+}
 
 firefox_roots(){
   {
@@ -98,7 +105,8 @@ install_ublock_everywhere(){
   roots="$(firefox_roots || true)"
   if [ -z "$roots" ]; then
     for fallback in /usr/lib/firefox-esr /usr/lib/firefox; do
-      [ -d "$fallback" ] && roots="${roots}${roots:+\n}$fallback"
+      [ -d "$fallback" ] && roots="${roots}${roots:+
+}$fallback"
     done
   fi
 
@@ -106,7 +114,7 @@ install_ublock_everywhere(){
     [ -n "$root" ] || continue
     write_policy "$root"
     if [ "$have_xpi" -eq 1 ]; then
-      for extdir in "$root/browser/extensions" "$root/extensions"; do
+      for extdir in "$root/browser/extensions" "$root/extensions" "$root/distribution/extensions"; do
         mkdir -p "$extdir"
         cp -f "$UBLOCK_XPI" "$extdir/$UBLOCK_ID.xpi" 2>/dev/null || true
       done
@@ -127,10 +135,70 @@ install_ublock_everywhere(){
     old_sum="$(cat "$UBLOCK_STAMP" 2>/dev/null || true)"
     if [ -n "$new_sum" ] && [ "$new_sum" != "$old_sum" ]; then
       rm -f "$PROFILE_DIR/addonStartup.json.lz4" "$PROFILE_DIR/extensions.json" "$PROFILE_DIR/extensions.ini" 2>/dev/null || true
+      rm -f "$UBLOCK_READY" 2>/dev/null || true
       printf '%s\n' "$new_sum" > "$UBLOCK_STAMP"
       log 'Cache de extensões limpo para registrar o uBlock Origin.'
     fi
   fi
+}
+
+prime_ublock_profile(){
+  [ -f "$UBLOCK_READY" ] && return 0
+  valid_xpi "$PROFILE_DIR/extensions/$UBLOCK_ID.xpi" || return 0
+  browser="$(firefox_cmd)"
+  [ -n "$browser" ] || return 0
+
+  mkdir -p "$PROFILE_DIR"
+  # Uma inicialização headless força o Firefox a processar a política/XPI
+  # antes do modo kiosk. Isso evita o caso em que o arquivo existe mas não ativa.
+  if command -v dbus-run-session >/dev/null 2>&1; then
+    dbus-run-session -- "$browser" --headless --no-remote --profile "$PROFILE_DIR" about:blank >>"$LOGFILE" 2>&1 &
+  else
+    "$browser" --headless --no-remote --profile "$PROFILE_DIR" about:blank >>"$LOGFILE" 2>&1 &
+  fi
+  pid=$!
+  count=0
+  while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 8 ]; do
+    sleep 1
+    count=$((count + 1))
+  done
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  if grep -q "$UBLOCK_ID" "$PROFILE_DIR/extensions.json" 2>/dev/null || \
+     [ -s "$PROFILE_DIR/extensions/$UBLOCK_ID.xpi" ]; then
+    : > "$UBLOCK_READY"
+    log 'Perfil Firefox inicializado com uBlock Origin.'
+  fi
+}
+
+package_exists(){
+  apk search -x "$1" 2>/dev/null | grep -Eq "^${1}(-[0-9]|$)"
+}
+
+prepare_video_stack(){
+  [ -f "$VIDEO_PREP_STAMP" ] && return 0
+  mkdir -p "$STATE_DIR"
+  # Tenta instalar apenas o que existe nos repositórios desta versão.
+  # O driver VA antigo é útil em alguns Intel; em outros o fallback por CPU continua.
+  apk update >/dev/null 2>&1 || true
+  for pkg in libva libva-utils libva-intel-driver; do
+    if ! apk info -e "$pkg" >/dev/null 2>&1 && package_exists "$pkg"; then
+      apk add --force-broken-world "$pkg" >/dev/null 2>&1 || true
+    fi
+  done
+  : > "$VIDEO_PREP_STAMP"
+}
+
+va_h264_available(){
+  command -v vainfo >/dev/null 2>&1 || return 1
+  for dev in /dev/dri/renderD128 /dev/dri/card0; do
+    [ -e "$dev" ] || continue
+    if vainfo --display drm --device "$dev" 2>/dev/null | grep -Eq 'VAProfileH264.*VAEntrypointVLD'; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 write_performance_prefs(){
@@ -146,29 +214,83 @@ write_performance_prefs(){
   ' "$prefs" > "$tmp"
   mv -f "$tmp" "$prefs"
 
-  cat >> "$prefs" <<'EOF_PREFS'
+  mem_kb="$(awk '/MemTotal/ {print $2; exit}' /proc/meminfo 2>/dev/null || printf 1048576)"
+  if [ "$mem_kb" -ge 1800000 ] 2>/dev/null; then
+    browser_mem=98304
+    media_one=131072
+    media_all=196608
+  else
+    browser_mem=65536
+    media_one=65536
+    media_all=98304
+  fi
+
+  hw_force=false
+  va_h264_available && hw_force=true || true
+
+  webm=true
+  hevc=true
+  if [ ! -f "$COMPAT_FILE" ]; then
+    webm=false
+    hevc=false
+  fi
+
+  cat >> "$prefs" <<EOF_PREFS
 // ORBIS-BOOST BEGIN
-// Perfil para Atom/Intel antigo: menos escrita no pendrive e codecs mais leves.
+// Perfil máximo para Atom/Intel antigo: fluidez acima de codecs pesados.
 user_pref("browser.cache.disk.enable", false);
 user_pref("browser.cache.disk.smart_size.enabled", false);
 user_pref("browser.cache.memory.enable", true);
-user_pref("browser.cache.memory.capacity", 65536);
-user_pref("browser.sessionstore.interval", 900000);
+user_pref("browser.cache.memory.capacity", $browser_mem);
+user_pref("browser.sessionstore.interval", 1800000);
 user_pref("browser.sessionstore.max_tabs_undo", 0);
 user_pref("browser.sessionstore.max_windows_undo", 0);
 user_pref("browser.sessionstore.max_resumed_crashes", 0);
 user_pref("browser.tabs.unloadOnLowMemory", true);
 user_pref("general.smoothScroll", false);
+user_pref("toolkit.cosmeticAnimations.enabled", false);
+user_pref("ui.prefersReducedMotion", 1);
+
+// Evita codecs caros em CPU. No modo padrão, WebM/VP8/VP9 e HEVC ficam fora,
+// fazendo os sites preferirem H.264/MP4 quando houver alternativa.
 user_pref("media.av1.enabled", false);
 user_pref("media.mediasource.vp9.enabled", false);
+user_pref("media.webm.enabled", $webm);
+user_pref("media.hevc.enabled", $hevc);
 user_pref("media.mp4.enabled", true);
 user_pref("media.mediasource.mp4.enabled", true);
+
+// Decodificação por hardware só é forçada quando o VA-API realmente anuncia H.264.
 user_pref("media.hardware-video-decoding.enabled", true);
+user_pref("media.hardware-video-decoding.force-enabled", $hw_force);
 user_pref("media.ffmpeg.vaapi.enabled", true);
-user_pref("media.cache_readahead_limit", 60);
-user_pref("media.cache_resume_threshold", 10);
+
+// Mais margem para streaming e fila de vídeo; quando a CPU atrasar, recupera cedo
+// em vez de congelar a imagem por vários segundos.
+user_pref("media.memory_cache_max_size", $media_one);
+user_pref("media.memory_caches_combined_limit_kb", $media_all);
+user_pref("media.memory_caches_combined_limit_pc_sysmem", 10);
+user_pref("media.cache_readahead_limit", 90);
+user_pref("media.cache_resume_threshold", 20);
+user_pref("media.video-queue.default-size", 16);
+user_pref("media.decoder.skip-to-next-key-frame.enabled", true);
+user_pref("media.decoder.skip_when_video_too_slow_ms", 700);
+user_pref("media.video_stats.enabled", false);
+user_pref("media.video.dropped_frame_stats.enabled", false);
+user_pref("media.suspend-background-video.enabled", true);
+user_pref("media.suspend-background-video.delay-ms", 1000);
+
+// Menos processos e tarefas de fundo no Atom.
 user_pref("dom.ipc.processCount", 1);
 user_pref("dom.ipc.processCount.webIsolated", 1);
+user_pref("accessibility.force_disabled", 1);
+user_pref("browser.urlbar.speculativeConnect.enabled", false);
+user_pref("network.prefetch-next", false);
+user_pref("network.dns.disablePrefetch", true);
+user_pref("datareporting.healthreport.uploadEnabled", false);
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
+
+// Extensões / bloqueio.
 user_pref("extensions.autoDisableScopes", 0);
 user_pref("extensions.enabledScopes", 15);
 user_pref("extensions.startupScanScopes", 15);
@@ -182,50 +304,82 @@ EOF_PREFS
 }
 
 performance_runtime(){
-  for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    [ -w "$gov" ] || continue
-    printf '%s\n' performance > "$gov" 2>/dev/null || true
+  for cpu in /sys/devices/system/cpu/cpu[0-9]*; do
+    [ -d "$cpu/cpufreq" ] || continue
+    gov="$cpu/cpufreq/scaling_governor"
+    min="$cpu/cpufreq/scaling_min_freq"
+    max="$cpu/cpufreq/cpuinfo_max_freq"
+    epp="$cpu/cpufreq/energy_performance_preference"
+    [ -w "$gov" ] && printf '%s\n' performance > "$gov" 2>/dev/null || true
+    if [ -w "$min" ] && [ -r "$max" ]; then
+      cat "$max" > "$min" 2>/dev/null || true
+    fi
+    [ -w "$epp" ] && printf '%s\n' performance > "$epp" 2>/dev/null || true
   done
 
-  if [ -w /sys/module/i915/parameters/enable_dc ]; then
-    printf '0\n' > /sys/module/i915/parameters/enable_dc 2>/dev/null || true
-  fi
+  # Reduz transições de energia da GPU que podem causar micro-engasgos em Intel antigo.
+  [ -w /sys/module/i915/parameters/enable_dc ] && printf '0\n' > /sys/module/i915/parameters/enable_dc 2>/dev/null || true
+  [ -w /sys/module/i915/parameters/enable_fbc ] && printf '0\n' > /sys/module/i915/parameters/enable_fbc 2>/dev/null || true
+  [ -w /sys/module/i915/parameters/enable_psr ] && printf '0\n' > /sys/module/i915/parameters/enable_psr 2>/dev/null || true
 }
 
 runtime(){
   need_root
   mkdir -p /var/log "$STATE_DIR" "$PROFILE_DIR"
+  prepare_video_stack
   write_performance_prefs
   install_ublock_everywhere
+  prime_ublock_profile
   performance_runtime
-  log 'Perfil de vídeo e AdBlock reforçado aplicado.'
+  log 'Perfil máximo de vídeo e AdBlock aplicado.'
 }
 
 status(){
   say 'ORBIS BOOST  •  STATUS'
   printf 'Perfil Firefox: '; [ -f "$PROFILE_DIR/user.js" ] && say 'presente' || say 'ausente'
-  printf 'Otimização H.264/cache RAM: '; grep -q 'ORBIS-BOOST BEGIN' "$PROFILE_DIR/user.js" 2>/dev/null && say 'ativa' || say 'ausente'
+  printf 'Modo codec: '; [ -f "$COMPAT_FILE" ] && say 'compatível (WebM/HEVC liberados)' || say 'H.264 preferencial'
+  printf 'VA-API H.264: '; va_h264_available && say 'disponível' || say 'não disponível; usando CPU'
   printf 'uBlock XPI local: '; valid_xpi "$UBLOCK_XPI" && say 'válido' || say 'ausente/inválido'
   printf 'uBlock no perfil: '; valid_xpi "$PROFILE_DIR/extensions/$UBLOCK_ID.xpi" && say 'presente' || say 'ausente'
+  printf 'uBlock registrado: '; grep -q "$UBLOCK_ID" "$PROFILE_DIR/extensions.json" 2>/dev/null && say 'sim' || say 'ainda não confirmado'
   printf 'uBlock política: '; grep -Rqs "$UBLOCK_ID" /usr/lib/firefox*/distribution/policies.json 2>/dev/null && say 'forçada' || say 'não encontrada'
   printf 'CPU governor: '; first="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || printf indisponível)"; say "$first"
+}
+
+compat(){
+  need_root
+  : > "$COMPAT_FILE"
+  runtime
+  say 'Modo compatibilidade ativado: WebM/HEVC liberados para sites que não oferecem H.264.'
+}
+
+aggressive(){
+  need_root
+  rm -f "$COMPAT_FILE"
+  runtime
+  say 'Modo fluidez máxima ativado: preferência forte por H.264/MP4.'
 }
 
 help(){
   cat <<'EOF_HELP'
 Uso:
-  orbis-boost --runtime   aplica otimização de vídeo e reforça o uBlock Origin
-  orbis-boost --status    mostra o estado das otimizações
+  orbis-boost --runtime      aplica otimização máxima de vídeo e reforça o uBlock
+  orbis-boost --status       mostra codecs, VA-API, CPU e estado do uBlock
+  orbis-boost --compat       libera WebM/HEVC se algum site quebrar
+  orbis-boost --aggressive   volta à preferência forte por H.264/MP4
 
-O perfil reduz escrita no pendrive, usa cache de navegador em RAM, evita AV1/VP9
-quando existe alternativa H.264, habilita decodificação de vídeo disponível no
-Firefox e instala o uBlock Origin por política + XPI em múltiplos escopos.
+O perfil mantém o Atom no clock máximo, reduz escrita no pendrive, usa mais cache
+de mídia em RAM, aumenta a fila de frames, recupera mais cedo quando o decoder
+fica atrasado e só força VA-API quando o hardware realmente anuncia H.264.
+Também inicializa o perfil Firefox em headless uma vez para registrar o uBlock.
 EOF_HELP
 }
 
 case "${1:-}" in
   --runtime|runtime|--apply|apply) runtime ;;
   --status|status) status ;;
+  --compat|compat) compat ;;
+  --aggressive|aggressive) aggressive ;;
   --help|-h|help|'') help ;;
   *) help; exit 1 ;;
 esac
