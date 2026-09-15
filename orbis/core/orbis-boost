@@ -1,0 +1,231 @@
+#!/bin/sh
+set -eu
+
+STATE_DIR="/var/lib/orbis-tv"
+PROFILE_DIR="$STATE_DIR/firefox"
+SHARE_DIR="/usr/local/share/orbis"
+LOGFILE="/var/log/orbis-boost.log"
+UBLOCK_ID="uBlock0@raymondhill.net"
+UBLOCK_URL="https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+UBLOCK_XPI="$SHARE_DIR/ublock-origin.xpi"
+UBLOCK_STAMP="$STATE_DIR/ublock-origin.sha256"
+FIREFOX_APP_ID="{ec8030f7-c20a-464f-9b0e-13a3a9e97384}"
+
+say(){ printf '%s\n' "$*"; }
+need_root(){ [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }; }
+log(){ mkdir -p /var/log; printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true; }
+
+firefox_roots(){
+  {
+    for cmd in firefox-esr firefox; do
+      if command -v "$cmd" >/dev/null 2>&1; then
+        bin="$(readlink -f "$(command -v "$cmd")" 2>/dev/null || command -v "$cmd")"
+        case "$bin" in
+          /usr/lib/*/firefox|/usr/lib/*/firefox-bin) dirname "$bin" ;;
+        esac
+      fi
+    done
+    for pkg in firefox-esr firefox; do
+      if apk info -e "$pkg" >/dev/null 2>&1; then
+        apk info -L "$pkg" 2>/dev/null | awk '/\/firefox$/ {sub(/\/firefox$/, ""); if ($0 ~ /\/usr\/lib\/firefox/) print}'
+      fi
+    done
+    find /usr/lib -maxdepth 3 -type f -name omni.ja -path '*firefox*' -print 2>/dev/null | sed 's#/omni.ja$##'
+  } | awk 'NF && !seen[$0]++'
+}
+
+valid_xpi(){
+  [ -s "$1" ] || return 1
+  sig="$(dd if="$1" bs=1 count=2 2>/dev/null || true)"
+  [ "$sig" = "PK" ]
+}
+
+ensure_ublock_xpi(){
+  mkdir -p "$SHARE_DIR" "$PROFILE_DIR/extensions" "$STATE_DIR"
+  if valid_xpi "$UBLOCK_XPI"; then return 0; fi
+
+  for pkg in ublock-origin firefox-ublock-origin; do
+    if apk info -e "$pkg" >/dev/null 2>&1; then
+      pkg_xpi="$(apk info -L "$pkg" 2>/dev/null | grep -E '\.xpi$' | head -n1 || true)"
+      if [ -n "$pkg_xpi" ] && valid_xpi "$pkg_xpi"; then
+        cp -f "$pkg_xpi" "$UBLOCK_XPI"
+        chmod 0644 "$UBLOCK_XPI" 2>/dev/null || true
+        return 0
+      fi
+    fi
+  done
+
+  command -v curl >/dev/null 2>&1 || return 1
+  tmp="$UBLOCK_XPI.tmp.$$"
+  rm -f "$tmp"
+  if curl --fail --location --retry 3 --connect-timeout 10 --max-time 60 --output "$tmp" "$UBLOCK_URL" >/dev/null 2>&1 && valid_xpi "$tmp"; then
+    mv -f "$tmp" "$UBLOCK_XPI"
+    chmod 0644 "$UBLOCK_XPI" 2>/dev/null || true
+    log 'uBlock Origin XPI obtido com sucesso.'
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+write_policy(){
+  root="$1"
+  [ -d "$root" ] || return 0
+  mkdir -p "$root/distribution"
+  cat > "$root/distribution/policies.json" <<EOF_POLICY
+{
+  "policies": {
+    "ExtensionSettings": {
+      "*": {"installation_mode": "allowed"},
+      "$UBLOCK_ID": {
+        "installation_mode": "force_installed",
+        "install_url": "$UBLOCK_URL"
+      }
+    },
+    "Extensions": {
+      "Install": ["$UBLOCK_URL"],
+      "Locked": ["$UBLOCK_ID"]
+    }
+  }
+}
+EOF_POLICY
+}
+
+install_ublock_everywhere(){
+  have_xpi=0
+  ensure_ublock_xpi && have_xpi=1 || true
+
+  roots="$(firefox_roots || true)"
+  if [ -z "$roots" ]; then
+    for fallback in /usr/lib/firefox-esr /usr/lib/firefox; do
+      [ -d "$fallback" ] && roots="${roots}${roots:+\n}$fallback"
+    done
+  fi
+
+  printf '%s\n' "$roots" | while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    write_policy "$root"
+    if [ "$have_xpi" -eq 1 ]; then
+      for extdir in "$root/browser/extensions" "$root/extensions"; do
+        mkdir -p "$extdir"
+        cp -f "$UBLOCK_XPI" "$extdir/$UBLOCK_ID.xpi" 2>/dev/null || true
+      done
+    fi
+  done
+
+  if [ "$have_xpi" -eq 1 ]; then
+    for extdir in \
+      "/usr/lib/mozilla/extensions/$FIREFOX_APP_ID" \
+      "/usr/share/mozilla/extensions/$FIREFOX_APP_ID" \
+      "$PROFILE_DIR/extensions"; do
+      mkdir -p "$extdir"
+      cp -f "$UBLOCK_XPI" "$extdir/$UBLOCK_ID.xpi" 2>/dev/null || true
+      chmod 0644 "$extdir/$UBLOCK_ID.xpi" 2>/dev/null || true
+    done
+
+    new_sum="$(sha256sum "$UBLOCK_XPI" 2>/dev/null | awk '{print $1}' || true)"
+    old_sum="$(cat "$UBLOCK_STAMP" 2>/dev/null || true)"
+    if [ -n "$new_sum" ] && [ "$new_sum" != "$old_sum" ]; then
+      rm -f "$PROFILE_DIR/addonStartup.json.lz4" "$PROFILE_DIR/extensions.json" "$PROFILE_DIR/extensions.ini" 2>/dev/null || true
+      printf '%s\n' "$new_sum" > "$UBLOCK_STAMP"
+      log 'Cache de extensões limpo para registrar o uBlock Origin.'
+    fi
+  fi
+}
+
+write_performance_prefs(){
+  mkdir -p "$PROFILE_DIR"
+  prefs="$PROFILE_DIR/user.js"
+  [ -f "$prefs" ] || : > "$prefs"
+
+  tmp="$prefs.tmp.$$"
+  awk '
+    /\/\/ ORBIS-BOOST BEGIN/ {skip=1; next}
+    /\/\/ ORBIS-BOOST END/   {skip=0; next}
+    !skip {print}
+  ' "$prefs" > "$tmp"
+  mv -f "$tmp" "$prefs"
+
+  cat >> "$prefs" <<'EOF_PREFS'
+// ORBIS-BOOST BEGIN
+// Perfil para Atom/Intel antigo: menos escrita no pendrive e codecs mais leves.
+user_pref("browser.cache.disk.enable", false);
+user_pref("browser.cache.disk.smart_size.enabled", false);
+user_pref("browser.cache.memory.enable", true);
+user_pref("browser.cache.memory.capacity", 65536);
+user_pref("browser.sessionstore.interval", 900000);
+user_pref("browser.sessionstore.max_tabs_undo", 0);
+user_pref("browser.sessionstore.max_windows_undo", 0);
+user_pref("browser.sessionstore.max_resumed_crashes", 0);
+user_pref("browser.tabs.unloadOnLowMemory", true);
+user_pref("general.smoothScroll", false);
+user_pref("media.av1.enabled", false);
+user_pref("media.mediasource.vp9.enabled", false);
+user_pref("media.mp4.enabled", true);
+user_pref("media.mediasource.mp4.enabled", true);
+user_pref("media.hardware-video-decoding.enabled", true);
+user_pref("media.ffmpeg.vaapi.enabled", true);
+user_pref("media.cache_readahead_limit", 60);
+user_pref("media.cache_resume_threshold", 10);
+user_pref("dom.ipc.processCount", 1);
+user_pref("dom.ipc.processCount.webIsolated", 1);
+user_pref("extensions.autoDisableScopes", 0);
+user_pref("extensions.enabledScopes", 15);
+user_pref("extensions.startupScanScopes", 15);
+user_pref("extensions.installDistroAddons", true);
+user_pref("privacy.trackingprotection.enabled", true);
+user_pref("privacy.trackingprotection.socialtracking.enabled", true);
+user_pref("dom.disable_open_during_load", true);
+// ORBIS-BOOST END
+EOF_PREFS
+  chmod 600 "$prefs" 2>/dev/null || true
+}
+
+performance_runtime(){
+  for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [ -w "$gov" ] || continue
+    printf '%s\n' performance > "$gov" 2>/dev/null || true
+  done
+
+  if [ -w /sys/module/i915/parameters/enable_dc ]; then
+    printf '0\n' > /sys/module/i915/parameters/enable_dc 2>/dev/null || true
+  fi
+}
+
+runtime(){
+  need_root
+  mkdir -p /var/log "$STATE_DIR" "$PROFILE_DIR"
+  write_performance_prefs
+  install_ublock_everywhere
+  performance_runtime
+  log 'Perfil de vídeo e AdBlock reforçado aplicado.'
+}
+
+status(){
+  say 'ORBIS BOOST  •  STATUS'
+  printf 'Perfil Firefox: '; [ -f "$PROFILE_DIR/user.js" ] && say 'presente' || say 'ausente'
+  printf 'Otimização H.264/cache RAM: '; grep -q 'ORBIS-BOOST BEGIN' "$PROFILE_DIR/user.js" 2>/dev/null && say 'ativa' || say 'ausente'
+  printf 'uBlock XPI local: '; valid_xpi "$UBLOCK_XPI" && say 'válido' || say 'ausente/inválido'
+  printf 'uBlock no perfil: '; valid_xpi "$PROFILE_DIR/extensions/$UBLOCK_ID.xpi" && say 'presente' || say 'ausente'
+  printf 'uBlock política: '; grep -Rqs "$UBLOCK_ID" /usr/lib/firefox*/distribution/policies.json 2>/dev/null && say 'forçada' || say 'não encontrada'
+  printf 'CPU governor: '; first="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || printf indisponível)"; say "$first"
+}
+
+help(){
+  cat <<'EOF_HELP'
+Uso:
+  orbis-boost --runtime   aplica otimização de vídeo e reforça o uBlock Origin
+  orbis-boost --status    mostra o estado das otimizações
+
+O perfil reduz escrita no pendrive, usa cache de navegador em RAM, evita AV1/VP9
+quando existe alternativa H.264, habilita decodificação de vídeo disponível no
+Firefox e instala o uBlock Origin por política + XPI em múltiplos escopos.
+EOF_HELP
+}
+
+case "${1:-}" in
+  --runtime|runtime|--apply|apply) runtime ;;
+  --status|status) status ;;
+  --help|-h|help|'') help ;;
+  *) help; exit 1 ;;
+esac
