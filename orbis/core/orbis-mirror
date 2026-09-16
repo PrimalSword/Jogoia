@@ -3,164 +3,91 @@ set -eu
 
 REPOS="/etc/apk/repositories"
 LOGFILE="/var/log/orbis-mirror.log"
-STATE_DIR="/var/lib/orbis-mirror"
-WIFI_FILE="$STATE_DIR/wifi-target"
-STOP_FILE="$STATE_DIR/stop"
 DISPLAY_NUM="${ORBIS_MIRROR_DISPLAY:-:0}"
-X_VT="${ORBIS_MIRROR_VT:-7}"
 MODE="${ORBIS_MIRROR_MODE:-800x600}"
 SIZE="${ORBIS_MIRROR_SIZE:-640}"
 FPS="${ORBIS_MIRROR_FPS:-30}"
 BITRATE="${ORBIS_MIRROR_BITRATE:-1500000}"
 VIDEO_BUFFER="${ORBIS_MIRROR_BUFFER:-100}"
-TRANSPORT="${ORBIS_MIRROR_TRANSPORT:-usb}"
 AUDIO_MODE="${ORBIS_MIRROR_AUDIO:-auto}"
-DIM_PHONE="${ORBIS_MIRROR_DIM_PHONE:-0}"
-REAL_SCREEN_OFF="${ORBIS_MIRROR_REAL_SCREEN_OFF:-0}"
-STRETCH="${ORBIS_MIRROR_STRETCH:-1}"
-CRT_FILL="${ORBIS_MIRROR_CRT_FILL:-1}"
-MAX_RETRIES="${ORBIS_MIRROR_RETRIES:-3}"
-ADB_SERIAL=""
-XORG_OWNED=0
-OPENBOX_OWNED=0
-ORIGINAL_VT=""
-OLD_BRIGHTNESS=""
-OLD_BRIGHTNESS_MODE=""
-OLD_TIMEOUT=""
-PHONE_TUNED=0
+ORIENTATION="${ORBIS_MIRROR_ORIENTATION:-0}"
 
 say(){ printf '%s\n' "$*"; }
-log(){ mkdir -p /var/log; printf '%s %s\n' "$(date '+%F %T' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true; }
 need_root(){ [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }; }
-supports(){ scrcpy --help 2>/dev/null | grep -q -- "$1"; }
-adb_cmd(){ if [ -n "$ADB_SERIAL" ]; then adb -s "$ADB_SERIAL" "$@"; else adb "$@"; fi; }
-usb_serial(){ adb devices 2>/dev/null | awk 'NR>1 && $2=="device" && $1 !~ /:/ {print $1; exit}'; }
+log(){ mkdir -p /var/log; printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true; }
 
-ensure_repos(){
+ensure_repositories(){
   mkdir -p /etc/apk
   [ -f "$REPOS" ] || : > "$REPOS"
-  grep -Eq '^[^#].*/v3\.24/main' "$REPOS" 2>/dev/null || echo 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> "$REPOS"
-  grep -Eq '^[^#].*/v3\.24/community' "$REPOS" 2>/dev/null || echo 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> "$REPOS"
+  grep -Eq '^[^#].*/v3\.24/main([[:space:]]*)$' "$REPOS" 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> "$REPOS"
+  grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' "$REPOS" 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> "$REPOS"
 }
 
 prepare(){
   need_root
-  ensure_repos
-  mkdir -p "$STATE_DIR"
+  ensure_repositories
   apk update >/dev/null 2>&1 || true
+
   missing=""
   command -v adb >/dev/null 2>&1 || missing="$missing android-tools-adb"
   command -v Xorg >/dev/null 2>&1 || missing="$missing xorg-server"
   command -v openbox >/dev/null 2>&1 || missing="$missing openbox"
   command -v xrandr >/dev/null 2>&1 || missing="$missing xrandr"
-  [ -z "$missing" ] || apk add --force-broken-world $missing
-  if ! command -v scrcpy >/dev/null 2>&1; then
-    apk add --force-broken-world scrcpy >/dev/null 2>&1 || \
-      apk add --force-broken-world --repository 'https://dl-cdn.alpinelinux.org/alpine/v3.23/community' scrcpy >/dev/null 2>&1 || {
-        say 'Não consegui instalar o scrcpy.'; exit 1;
-      }
+  if [ -n "$missing" ]; then
+    say "Instalando dependências básicas:$missing"
+    apk add --force-broken-world $missing
   fi
+
+  if ! command -v scrcpy >/dev/null 2>&1; then
+    say 'Instalando scrcpy...'
+    if ! apk add --force-broken-world scrcpy >/dev/null 2>&1; then
+      say 'scrcpy não apareceu no repositório 3.24; tentando o pacote estável 3.23...'
+      apk add --force-broken-world --repository 'https://dl-cdn.alpinelinux.org/alpine/v3.23/community' scrcpy >/dev/null 2>&1 || {
+        say 'Não consegui instalar o scrcpy automaticamente.'
+        exit 1
+      }
+    fi
+  fi
+
   say 'ORBIS Mirror preparado.'
   scrcpy --version 2>/dev/null | head -n1 || true
+  adb version 2>/dev/null | head -n1 || true
 }
 
-wait_usb(){
-  adb start-server >/dev/null 2>&1 || true
-  serial="$(usb_serial || true)"
-  if [ -n "$serial" ]; then ADB_SERIAL="$serial"; return 0; fi
-  say 'Conecte o celular por USB e aceite a Depuração USB.'
-  n=0
-  while [ "$n" -lt 30 ]; do
-    serial="$(usb_serial || true)"
-    if [ -n "$serial" ]; then ADB_SERIAL="$serial"; return 0; fi
-    n=$((n+1)); sleep 1
-  done
-  say 'Celular USB não encontrado.'; exit 1
-}
-
-phone_wifi_ip(){
-  adb_cmd shell ip -4 route 2>/dev/null | tr -d '\r' | awk '$0 ~ / dev (wlan[0-9]*|wifi[0-9]*)/ {for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
-}
-
-wifi_setup(){
-  need_root
-  command -v adb >/dev/null 2>&1 || prepare
-  mkdir -p "$STATE_DIR"
-  wait_usb
-  ip="$(phone_wifi_ip || true)"
-  [ -n "$ip" ] || { say 'Não achei o IP Wi-Fi do celular.'; exit 1; }
-  target="$ip:5555"
-  say "Preparando ADB por Wi-Fi em $target..."
-  adb_cmd tcpip 5555 >/dev/null 2>&1 || { say 'O Android recusou adb tcpip.'; exit 1; }
-  sleep 2
-  timeout 5 adb connect "$target" >/dev/null 2>&1 || true
-  if timeout 3 adb -s "$target" get-state 2>/dev/null | grep -q '^device$'; then
-    printf '%s\n' "$target" > "$WIFI_FILE"
-    say 'Wi-Fi configurado. Pode tirar o cabo e usar: orbis-mirror --wifi'
-  else
-    say 'Não consegui fechar a conexão ADB via Wi-Fi.'; exit 1
-  fi
-}
-
-connect_wifi(){
-  [ -r "$WIFI_FILE" ] || { say 'Wi-Fi não configurado. Rode --wifi-setup com USB.'; return 1; }
-  target="$(cat "$WIFI_FILE")"
-  timeout 4 adb connect "$target" >/dev/null 2>&1 || true
-  timeout 3 adb -s "$target" get-state 2>/dev/null | grep -q '^device$' || return 1
-  ADB_SERIAL="$target"
+adb_state(){
+  adb devices 2>/dev/null | awk 'NR>1 && NF>=2 {print $2; exit}'
 }
 
 wait_phone(){
-  case "$TRANSPORT" in
-    wifi) connect_wifi || { say 'ADB Wi-Fi indisponível. Rode --wifi-setup novamente.'; exit 1; } ;;
-    *) wait_usb ;;
-  esac
-}
+  adb start-server >/dev/null 2>&1 || true
+  state="$(adb_state || true)"
+  if [ "$state" = "device" ]; then return 0; fi
 
-phone_physical_size(){
-  adb_cmd shell wm size 2>/dev/null | tr -d '\r' | awk -F': ' '/Physical size:/ {print $2; exit}'
-}
+  say ''
+  say 'Conecte o celular por USB.'
+  say 'No Android: Opções do desenvolvedor > Depuração USB = ATIVADA.'
+  say 'Quando aparecer “Permitir depuração USB?”, aceite.'
+  say 'Aguardando o celular por até 30 segundos...'
 
-phone_rotation(){
-  r="$(adb_cmd shell dumpsys input 2>/dev/null | tr -d '\r' | awk -F= '/SurfaceOrientation/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' || true)"
-  if [ -z "$r" ]; then
-    r="$(adb_cmd shell dumpsys display 2>/dev/null | tr -d '\r' | sed -n 's/.*mCurrentOrientation=\([0-3]\).*/\1/p' | head -n1 || true)"
-  fi
-  case "$r" in 0|1|2|3) printf '%s\n' "$r" ;; *) printf '0\n' ;; esac
-}
-
-crt_fill_args(){
-  [ "$CRT_FILL" = "1" ] || return 0
-  supports --crop || return 0
-  ps="$(phone_physical_size || true)"
-  case "$ps" in
-    *x*) : ;;
-    *) return 0 ;;
-  esac
-  w="${ps%x*}"; h="${ps#*x}"
-  case "$w:$h" in
-    *[!0-9:]*|'':*) return 0 ;;
-  esac
-
-  if [ "$w" -le "$h" ]; then
-    # Telefone naturalmente em retrato. Recorta um quadro 3:4 central;
-    # quando o Android está em paisagem ele vira 4:3, perfeito para a CRT.
-    ch=$((w * 4 / 3))
-    if [ "$ch" -le "$h" ]; then
-      y=$(((h - ch) / 2))
-      printf '%s\n' "--crop=${w}:${ch}:0:${y}"
-    fi
-    rot="$(phone_rotation)"
-    case "$rot" in
-      0|2) supports --orientation && printf '%s\n' '--orientation=90' ;;
+  count=0
+  while [ "$count" -lt 30 ]; do
+    state="$(adb_state || true)"
+    case "$state" in
+      device) say 'Celular autorizado via ADB.'; return 0 ;;
+      *) printf '.' ;;
     esac
+    count=$((count + 1))
+    sleep 1
+  done
+  printf '\n'
+
+  state="$(adb_state || true)"
+  if [ "$state" = "unauthorized" ]; then
+    say 'O celular foi visto, mas ainda não foi autorizado. Aceite a chave RSA e rode novamente.'
   else
-    cw=$((h * 4 / 3))
-    if [ "$cw" -le "$w" ]; then
-      x=$(((w - cw) / 2))
-      printf '%s\n' "--crop=${cw}:${h}:${x}:0"
-    fi
+    say 'Nenhum celular autorizado foi encontrado. Confira cabo, porta USB e Depuração USB.'
   fi
+  exit 1
 }
 
 configure_display(){
@@ -168,198 +95,158 @@ configure_display(){
   out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(VGA|HDMI|DP|DVI)' | head -n1 || true)"
   [ -n "$out" ] || out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1; exit}' || true)"
   [ -n "$out" ] || return 0
+
   for internal in $(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(LVDS|eDP|DSI)' || true); do
     [ "$internal" = "$out" ] || xrandr --output "$internal" --off >/dev/null 2>&1 || true
   done
-  xrandr --output "$out" --mode "$MODE" --primary --pos 0x0 >/dev/null 2>&1 || \
+
+  if xrandr --query 2>/dev/null | grep -q "^[[:space:]]*$MODE"; then
+    xrandr --output "$out" --mode "$MODE" --primary --pos 0x0 >/dev/null 2>&1 || true
+  elif xrandr --query 2>/dev/null | grep -q '^[[:space:]]*640x480'; then
     xrandr --output "$out" --mode 640x480 --primary --pos 0x0 >/dev/null 2>&1 || true
+  fi
 }
 
 start_graphics(){
   export DISPLAY="$DISPLAY_NUM"
-  ORIGINAL_VT="$(fgconsole 2>/dev/null || printf '1')"
-  XORG_OWNED=0; OPENBOX_OWNED=0
+  XORG_OWNED=0
+  OPENBOX_OWNED=0
 
   if ! xrandr --query >/dev/null 2>&1; then
     rm -f /tmp/.X0-lock 2>/dev/null || true
-    Xorg "$DISPLAY_NUM" "vt$X_VT" -nolisten tcp >>"$LOGFILE" 2>&1 &
-    XORG_PID=$!; XORG_OWNED=1
-    n=0
-    while [ "$n" -lt 40 ]; do
-      xrandr --query >/dev/null 2>&1 && break
+    Xorg "$DISPLAY_NUM" vt1 -keeptty -nolisten tcp >>"$LOGFILE" 2>&1 &
+    XORG_PID=$!
+    XORG_OWNED=1
+    count=0
+    while [ "$count" -lt 40 ]; do
+      if xrandr --query >/dev/null 2>&1; then break; fi
       kill -0 "$XORG_PID" 2>/dev/null || break
-      n=$((n+1)); sleep 0.25
+      count=$((count + 1))
+      sleep 0.25
     done
+    xrandr --query >/dev/null 2>&1 || {
+      say 'O Xorg não iniciou corretamente.'
+      tail -n 50 "$LOGFILE" 2>/dev/null || true
+      exit 1
+    }
   fi
 
-  xrandr --query >/dev/null 2>&1 || { say 'Xorg não iniciou.'; exit 1; }
   configure_display
+
   if ! pgrep -x openbox >/dev/null 2>&1; then
-    openbox >>"$LOGFILE" 2>&1 & OPENBOX_PID=$!; OPENBOX_OWNED=1; sleep 1
+    openbox >>"$LOGFILE" 2>&1 &
+    OPENBOX_PID=$!
+    OPENBOX_OWNED=1
+    sleep 1
   fi
-}
-
-save_phone_display(){
-  [ "$DIM_PHONE" = "1" ] || return 0
-  OLD_BRIGHTNESS="$(adb_cmd shell settings get system screen_brightness 2>/dev/null | tr -d '\r' || true)"
-  OLD_BRIGHTNESS_MODE="$(adb_cmd shell settings get system screen_brightness_mode 2>/dev/null | tr -d '\r' || true)"
-  OLD_TIMEOUT="$(adb_cmd shell settings get system screen_off_timeout 2>/dev/null | tr -d '\r' || true)"
-  adb_cmd shell settings put system screen_brightness_mode 0 >/dev/null 2>&1 || true
-  adb_cmd shell settings put system screen_brightness 20 >/dev/null 2>&1 || true
-  adb_cmd shell settings put system screen_off_timeout 2147483647 >/dev/null 2>&1 || true
-  PHONE_TUNED=1
-}
-
-restore_phone_display(){
-  [ "$PHONE_TUNED" = "1" ] || return 0
-  [ -n "$OLD_BRIGHTNESS_MODE" ] && adb_cmd shell settings put system screen_brightness_mode "$OLD_BRIGHTNESS_MODE" >/dev/null 2>&1 || true
-  [ -n "$OLD_BRIGHTNESS" ] && adb_cmd shell settings put system screen_brightness "$OLD_BRIGHTNESS" >/dev/null 2>&1 || true
-  [ -n "$OLD_TIMEOUT" ] && adb_cmd shell settings put system screen_off_timeout "$OLD_TIMEOUT" >/dev/null 2>&1 || true
-  PHONE_TUNED=0
 }
 
 stop_graphics(){
-  restore_phone_display || true
-  [ "$OPENBOX_OWNED" -eq 0 ] || { kill "$OPENBOX_PID" 2>/dev/null || true; wait "$OPENBOX_PID" 2>/dev/null || true; }
-  [ "$XORG_OWNED" -eq 0 ] || { kill "$XORG_PID" 2>/dev/null || true; wait "$XORG_PID" 2>/dev/null || true; }
-  if [ -n "$ORIGINAL_VT" ] && command -v chvt >/dev/null 2>&1; then chvt "$ORIGINAL_VT" >/dev/null 2>&1 || true; fi
-  rm -f "$STOP_FILE" 2>/dev/null || true
-}
-
-run_once(){
-  args="--serial=$ADB_SERIAL --video-codec=h264 --max-size=$SIZE --max-fps=$FPS --video-bit-rate=$BITRATE --fullscreen --no-control"
-  supports --video-buffer && args="$args --video-buffer=$VIDEO_BUFFER"
-  supports --window-borderless && args="$args --window-borderless"
-  supports --disable-screensaver && args="$args --disable-screensaver"
-  supports --no-window-aspect-ratio-lock && args="$args --no-window-aspect-ratio-lock"
-  supports --window-width && args="$args --window-x=0 --window-y=0 --window-width=800 --window-height=600"
-
-  if [ "$CRT_FILL" = "1" ]; then
-    for a in $(crt_fill_args); do args="$args $a"; done
+  if [ "${OPENBOX_OWNED:-0}" -eq 1 ] && [ -n "${OPENBOX_PID:-}" ]; then
+    kill "$OPENBOX_PID" 2>/dev/null || true
+    wait "$OPENBOX_PID" 2>/dev/null || true
   fi
-
-  if [ "$STRETCH" = "1" ] && supports --render-fit; then args="$args --render-fit=stretched"; fi
-  if [ "$REAL_SCREEN_OFF" = "1" ] && supports --turn-screen-off; then args="$args --turn-screen-off"; fi
-  [ "$AUDIO_MODE" = "off" ] && supports --no-audio && args="$args --no-audio"
-  log "scrcpy $args"
-  # shellcheck disable=SC2086
-  nice -n -5 scrcpy $args >>"$LOGFILE" 2>&1
+  if [ "${XORG_OWNED:-0}" -eq 1 ] && [ -n "${XORG_PID:-}" ]; then
+    kill "$XORG_PID" 2>/dev/null || true
+    wait "$XORG_PID" 2>/dev/null || true
+  fi
 }
 
-reconnect(){
-  [ -e "$STOP_FILE" ] && return 1
-  if [ "$TRANSPORT" = "wifi" ]; then connect_wifi; else serial="$(usb_serial || true)"; [ -n "$serial" ] || return 1; ADB_SERIAL="$serial"; fi
-}
-
-emergency_stop(){
-  need_root
-  mkdir -p "$STATE_DIR"
-  : > "$STOP_FILE"
-  pkill -TERM scrcpy 2>/dev/null || true
-  sleep 1
-  pkill -TERM scrcpy 2>/dev/null || true
-  pkill -TERM openbox 2>/dev/null || true
-  pkill -TERM Xorg 2>/dev/null || true
-  if command -v chvt >/dev/null 2>&1; then chvt 1 >/dev/null 2>&1 || true; fi
-  say 'ORBIS Mirror encerrado.'
+supports(){
+  scrcpy --help 2>/dev/null | grep -q -- "$1"
 }
 
 run_mirror(){
   need_root
   command -v scrcpy >/dev/null 2>&1 || prepare
-  mkdir -p "$STATE_DIR"; rm -f "$STOP_FILE"
+  command -v adb >/dev/null 2>&1 || prepare
   wait_phone
-  adb_cmd shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
-  adb_cmd shell wm dismiss-keyguard >/dev/null 2>&1 || true
-  [ -x /usr/local/bin/orbis-audio ] && /usr/local/bin/orbis-audio --clean >>"$LOGFILE" 2>&1 || true
-  start_graphics
-  trap 'stop_graphics' EXIT INT TERM HUP
-  export DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=alsa
-  save_phone_display
-  if [ "$TRANSPORT" = "usb" ]; then
-    say 'ORBIS MIRROR • USB estável • CRT 4:3 • Ctrl+Alt+F1 = emergência'
-  else
-    say 'ORBIS MIRROR • Wi-Fi experimental • CRT 4:3 • Ctrl+Alt+F1 = emergência'
+
+  if [ -x /usr/local/bin/orbis-audio ]; then
+    /usr/local/bin/orbis-audio --clean >>"$LOGFILE" 2>&1 || true
   fi
 
-  tries=0
-  while :; do
-    code=0; run_once || code=$?
-    [ -e "$STOP_FILE" ] && break
-    [ "$code" -eq 0 ] && break
-    tries=$((tries+1)); [ "$tries" -le "$MAX_RETRIES" ] || break
-    say "Link caiu. Reconectando ($tries/$MAX_RETRIES)..."; sleep 2
-    reconnect || { [ -e "$STOP_FILE" ] && break; continue; }
-  done
+  start_graphics
+  trap 'stop_graphics' EXIT INT TERM HUP
+  export DISPLAY="$DISPLAY_NUM"
+  export SDL_VIDEODRIVER=x11
+  export SDL_AUDIODRIVER=alsa
 
-  stop_graphics; trap - EXIT INT TERM HUP
+  # Perfil original que ficou liso no Itautec: sem crop, sem stretch,
+  # sem Wi-Fi, sem rotação automática e sem filtros extras.
+  args="--video-codec=h264 --max-size=$SIZE --max-fps=$FPS --video-bit-rate=$BITRATE --fullscreen --no-control"
+  supports --video-buffer && args="$args --video-buffer=$VIDEO_BUFFER"
+
+  # Mantém a imagem na orientação normal. Os modos 90/270 ficam só como ajuste manual.
+  if supports --display-orientation; then
+    args="$args --display-orientation=$ORIENTATION"
+  elif supports --orientation; then
+    args="$args --orientation=$ORIENTATION"
+  fi
+
+  case "$AUDIO_MODE" in
+    off|0|false|no) supports --no-audio && args="$args --no-audio" ;;
+    auto|on|1|true|yes) : ;;
+  esac
+
+  say ''
+  say 'ORBIS MIRROR • USB suave • perfil original restaurado'
+  say "Vídeo: H.264, ${SIZE}px, ${FPS} fps, ${BITRATE} bit/s, buffer ${VIDEO_BUFFER} ms"
+  say 'Orientação: normal. Deixe o celular em paisagem para assistir.'
+  say 'Para sair: Ctrl+C.'
+  say ''
+
+  log "Iniciando scrcpy: $args"
+  code=0
+  # shellcheck disable=SC2086
+  nice -n -5 scrcpy $args >>"$LOGFILE" 2>&1 || code=$?
+
+  stop_graphics
+  trap - EXIT INT TERM HUP
+  if [ "$code" -ne 0 ]; then
+    say "scrcpy encerrou com código $code. Últimas linhas do log:"
+    tail -n 40 "$LOGFILE" 2>/dev/null || true
+    return "$code"
+  fi
 }
 
 status(){
   say 'ORBIS MIRROR • STATUS'
-  scrcpy --version 2>/dev/null | head -n1 || true
-  printf 'Wi-Fi salvo: '; [ -r "$WIFI_FILE" ] && cat "$WIFI_FILE" || say 'não configurado'
-  printf 'Render-fit stretched: '; supports --render-fit && say 'sim' || say 'não'
-  printf 'CRT fill automático: '; [ "$CRT_FILL" = "1" ] && say 'sim' || say 'não'
-  printf 'X VT: '; say "$X_VT"
-  printf 'Tentativas de reconexão: '; say "$MAX_RETRIES"
+  printf 'scrcpy: '; command -v scrcpy >/dev/null 2>&1 && scrcpy --version 2>/dev/null | head -n1 || say 'ausente'
+  printf 'adb: '; command -v adb >/dev/null 2>&1 && adb version 2>/dev/null | head -n1 || say 'ausente'
+  printf 'celular: '
+  state="$(adb_state || true)"
+  case "$state" in device) say 'conectado e autorizado' ;; unauthorized) say 'aguardando autorização' ;; *) say 'não conectado' ;; esac
+  printf 'perfil: %spx / %sfps / %s bit/s / orientação %s\n' "$SIZE" "$FPS" "$BITRATE" "$ORIENTATION"
 }
 
 help(){
-  cat <<'EOF'
-Uso recomendado para a CRT:
-  orbis-mirror --usb
+  cat <<'EOF_HELP'
+Uso:
+  orbis-mirror                USB, perfil original suave
+  orbis-mirror --usb          igual ao comando acima
+  orbis-mirror --rotate-cw    gira só a imagem 90° se necessário
+  orbis-mirror --rotate-ccw   gira só a imagem 270° se necessário
+  orbis-mirror --video-only   desativa áudio do scrcpy
+  orbis-mirror --lite         480px / 24fps / 900 kbit
+  orbis-mirror --quality      800px / 30fps / 2 Mbit
+  orbis-mirror --prepare      instala dependências
+  orbis-mirror --status       mostra estado
 
-Outras opções:
-  orbis-mirror --wifi
-  orbis-mirror --wifi-setup
-  orbis-mirror --no-crt-fill
-  orbis-mirror --screen-on
-  orbis-mirror --dim-screen
-  orbis-mirror --real-screen-off
-  orbis-mirror --no-stretch
-  orbis-mirror --lite
-  orbis-mirror --quality
-  orbis-mirror --stop
-  orbis-mirror --status
-
-O modo CRT recorta automaticamente o centro da tela do celular para 4:3 e só gira
-a imagem no lado do Itautec quando necessário. Não altera a rotação do Android.
-
-Emergência durante o fullscreen:
-  Ctrl+Alt+F1
-  orbis-mirror --stop
-EOF
+O padrão voltou ao primeiro modo USB que ficou liso: nada de Wi-Fi, crop 4:3,
+stretch, rotação automática ou alterações na tela do celular.
+EOF_HELP
 }
 
-DO_SETUP=0
-DO_STATUS=0
-DO_STOP=0
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --wifi) TRANSPORT=wifi; FPS=24; BITRATE=1000000; VIDEO_BUFFER=120 ;;
-    --wifi-setup) DO_SETUP=1 ;;
-    --usb) TRANSPORT=usb; FPS=30; BITRATE=1500000; VIDEO_BUFFER=80 ;;
-    --screen-on) DIM_PHONE=0; REAL_SCREEN_OFF=0 ;;
-    --dim-screen) DIM_PHONE=1; REAL_SCREEN_OFF=0 ;;
-    --real-screen-off) REAL_SCREEN_OFF=1; DIM_PHONE=0 ;;
-    --no-crt-fill) CRT_FILL=0 ;;
-    --crt-fill) CRT_FILL=1 ;;
-    --no-stretch) STRETCH=0 ;;
-    --stretch) STRETCH=1 ;;
-    --video-only) AUDIO_MODE=off ;;
-    --lite) SIZE=480; FPS=24; BITRATE=900000; VIDEO_BUFFER=100 ;;
-    --quality) SIZE=800; FPS=30; BITRATE=2000000; VIDEO_BUFFER=80 ;;
-    --stop) DO_STOP=1 ;;
-    --status) DO_STATUS=1 ;;
-    --prepare) prepare; exit 0 ;;
-    -h|--help|help) help; exit 0 ;;
-    *) say "Opção desconhecida: $1"; help; exit 1 ;;
-  esac
-  shift
-done
-
-[ "$DO_STOP" -eq 0 ] || { emergency_stop; exit 0; }
-[ "$DO_SETUP" -eq 0 ] || { wifi_setup; exit 0; }
-[ "$DO_STATUS" -eq 0 ] || { status; exit 0; }
-run_mirror
+case "${1:-}" in
+  --prepare|prepare) prepare ;;
+  --status|status) status ;;
+  --usb|'') run_mirror ;;
+  --rotate-cw) ORIENTATION=90; run_mirror ;;
+  --rotate-ccw) ORIENTATION=270; run_mirror ;;
+  --video-only) AUDIO_MODE=off; run_mirror ;;
+  --lite) SIZE=480; FPS=24; BITRATE=900000; VIDEO_BUFFER=120; run_mirror ;;
+  --quality) SIZE=800; FPS=30; BITRATE=2000000; VIDEO_BUFFER=80; run_mirror ;;
+  --help|-h|help) help ;;
+  *) help; exit 1 ;;
+esac
