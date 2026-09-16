@@ -1,0 +1,264 @@
+#!/bin/sh
+set -eu
+
+REPOS="/etc/apk/repositories"
+LOGFILE="/var/log/orbis-mirror.log"
+DISPLAY_NUM="${ORBIS_MIRROR_DISPLAY:-:0}"
+MODE="${ORBIS_MIRROR_MODE:-800x600}"
+SIZE="${ORBIS_MIRROR_SIZE:-640}"
+FPS="${ORBIS_MIRROR_FPS:-30}"
+BITRATE="${ORBIS_MIRROR_BITRATE:-1500000}"
+VIDEO_BUFFER="${ORBIS_MIRROR_BUFFER:-100}"
+AUDIO_MODE="${ORBIS_MIRROR_AUDIO:-auto}"
+
+say(){ printf '%s\n' "$*"; }
+need_root(){ [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }; }
+log(){ mkdir -p /var/log; printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true; }
+
+ensure_repositories(){
+  mkdir -p /etc/apk
+  [ -f "$REPOS" ] || : > "$REPOS"
+  grep -Eq '^[^#].*/v3\.24/main([[:space:]]*)$' "$REPOS" 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' >> "$REPOS"
+  grep -Eq '^[^#].*/v3\.24/community([[:space:]]*)$' "$REPOS" 2>/dev/null || printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> "$REPOS"
+}
+
+prepare(){
+  need_root
+  ensure_repositories
+  apk update >/dev/null 2>&1 || true
+
+  missing=""
+  command -v adb >/dev/null 2>&1 || missing="$missing android-tools-adb"
+  command -v Xorg >/dev/null 2>&1 || missing="$missing xorg-server"
+  command -v openbox >/dev/null 2>&1 || missing="$missing openbox"
+  command -v xrandr >/dev/null 2>&1 || missing="$missing xrandr"
+  if [ -n "$missing" ]; then
+    say "Instalando dependências básicas:$missing"
+    apk add --force-broken-world $missing
+  fi
+
+  if ! command -v scrcpy >/dev/null 2>&1; then
+    say 'Instalando scrcpy...'
+    if ! apk add --force-broken-world scrcpy >/dev/null 2>&1; then
+      say 'scrcpy não apareceu no repositório 3.24; tentando o pacote estável 3.23 sem alterar os repositórios permanentes...'
+      apk add --force-broken-world --repository 'https://dl-cdn.alpinelinux.org/alpine/v3.23/community' scrcpy >/dev/null 2>&1 || {
+        say 'Não consegui instalar o scrcpy automaticamente.'
+        say 'O ADB foi preparado, mas o espelhamento precisa do pacote scrcpy compatível com esta instalação.'
+        exit 1
+      }
+    fi
+  fi
+
+  say 'ORBIS Mirror preparado.'
+  scrcpy --version 2>/dev/null | head -n1 || true
+  adb version 2>/dev/null | head -n1 || true
+}
+
+adb_state(){
+  adb devices 2>/dev/null | awk 'NR>1 && NF>=2 {print $2; exit}'
+}
+
+wait_phone(){
+  adb start-server >/dev/null 2>&1 || true
+  state="$(adb_state || true)"
+  if [ "$state" = "device" ]; then return 0; fi
+
+  say ''
+  say 'Conecte o celular por USB.'
+  say 'No Android: Opções do desenvolvedor > Depuração USB = ATIVADA.'
+  say 'Quando aparecer “Permitir depuração USB?”, marque “Sempre permitir” e toque em Permitir.'
+  say 'Aguardando o celular por até 30 segundos...'
+
+  count=0
+  while [ "$count" -lt 30 ]; do
+    state="$(adb_state || true)"
+    case "$state" in
+      device) say 'Celular autorizado via ADB.'; return 0 ;;
+      unauthorized) printf '.' ;;
+      *) printf '.' ;;
+    esac
+    count=$((count + 1))
+    sleep 1
+  done
+  printf '\n'
+
+  state="$(adb_state || true)"
+  if [ "$state" = "unauthorized" ]; then
+    say 'O celular foi visto, mas ainda não foi autorizado. Aceite a chave RSA na tela do celular e rode orbis-mirror novamente.'
+  else
+    say 'Nenhum celular autorizado foi encontrado. Tente outro cabo/porta USB e confira a Depuração USB.'
+  fi
+  exit 1
+}
+
+configure_display(){
+  export DISPLAY="$DISPLAY_NUM"
+  out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(VGA|HDMI|DP|DVI)' | head -n1 || true)"
+  [ -n "$out" ] || out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1; exit}' || true)"
+  [ -n "$out" ] || return 0
+
+  for internal in $(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(LVDS|eDP|DSI)' || true); do
+    [ "$internal" = "$out" ] || xrandr --output "$internal" --off >/dev/null 2>&1 || true
+  done
+
+  if xrandr --query 2>/dev/null | grep -q "^[[:space:]]*$MODE"; then
+    xrandr --output "$out" --mode "$MODE" --primary --pos 0x0 >/dev/null 2>&1 || true
+  elif xrandr --query 2>/dev/null | grep -q '^[[:space:]]*640x480'; then
+    xrandr --output "$out" --mode 640x480 --primary --pos 0x0 >/dev/null 2>&1 || true
+  fi
+}
+
+start_graphics(){
+  export DISPLAY="$DISPLAY_NUM"
+  XORG_OWNED=0
+  OPENBOX_OWNED=0
+
+  if ! xrandr --query >/dev/null 2>&1; then
+    rm -f /tmp/.X0-lock 2>/dev/null || true
+    Xorg "$DISPLAY_NUM" vt1 -keeptty -nolisten tcp >>"$LOGFILE" 2>&1 &
+    XORG_PID=$!
+    XORG_OWNED=1
+    count=0
+    while [ "$count" -lt 40 ]; do
+      if xrandr --query >/dev/null 2>&1; then break; fi
+      kill -0 "$XORG_PID" 2>/dev/null || break
+      count=$((count + 1))
+      sleep 0.25
+    done
+    xrandr --query >/dev/null 2>&1 || {
+      say 'O Xorg não iniciou corretamente.'
+      tail -n 50 "$LOGFILE" 2>/dev/null || true
+      exit 1
+    }
+  fi
+
+  configure_display
+
+  if ! pgrep -x openbox >/dev/null 2>&1; then
+    openbox >>"$LOGFILE" 2>&1 &
+    OPENBOX_PID=$!
+    OPENBOX_OWNED=1
+    sleep 1
+  fi
+}
+
+stop_graphics(){
+  if [ "${OPENBOX_OWNED:-0}" -eq 1 ] && [ -n "${OPENBOX_PID:-}" ]; then
+    kill "$OPENBOX_PID" 2>/dev/null || true
+    wait "$OPENBOX_PID" 2>/dev/null || true
+  fi
+  if [ "${XORG_OWNED:-0}" -eq 1 ] && [ -n "${XORG_PID:-}" ]; then
+    kill "$XORG_PID" 2>/dev/null || true
+    wait "$XORG_PID" 2>/dev/null || true
+  fi
+}
+
+supports(){
+  scrcpy --help 2>/dev/null | grep -q -- "$1"
+}
+
+run_mirror(){
+  need_root
+  command -v scrcpy >/dev/null 2>&1 || prepare
+  command -v adb >/dev/null 2>&1 || prepare
+  wait_phone
+
+  if [ -x /usr/local/bin/orbis-audio ]; then
+    /usr/local/bin/orbis-audio --clean >>"$LOGFILE" 2>&1 || true
+  fi
+
+  start_graphics
+  trap 'stop_graphics' EXIT INT TERM HUP
+  export DISPLAY="$DISPLAY_NUM"
+  export SDL_VIDEODRIVER=x11
+  export SDL_AUDIODRIVER=alsa
+
+  args="--video-codec=h264 --max-size=$SIZE --max-fps=$FPS --video-bit-rate=$BITRATE --fullscreen --no-control"
+  supports --video-buffer && args="$args --video-buffer=$VIDEO_BUFFER"
+
+  case "$AUDIO_MODE" in
+    off|0|false|no) supports --no-audio && args="$args --no-audio" ;;
+    auto|on|1|true|yes) : ;;
+  esac
+
+  say ''
+  say 'ORBIS MIRROR  •  CELULAR -> USB -> ITAUTEC -> VGA2AV -> CRT'
+  say "Vídeo: H.264, limite ${SIZE}px, até ${FPS} fps, bitrate ${BITRATE}, buffer ${VIDEO_BUFFER} ms"
+  say 'Controle: use o próprio celular. Vire-o para paisagem para assistir.'
+  if [ "$AUDIO_MODE" = "off" ]; then
+    say 'Áudio: desativado no scrcpy; use saída direta do celular se desejar.'
+  else
+    say 'Áudio: o scrcpy tentará enviar pelo P2 do Itautec. Se o Android não suportar, use orbis-mirror --video-only.'
+  fi
+  say 'Para sair: Ctrl+C.'
+  say ''
+
+  log "Iniciando scrcpy: $args"
+  # shellcheck disable=SC2086
+  nice -n -5 scrcpy $args >>"$LOGFILE" 2>&1 || code=$?
+  code="${code:-0}"
+
+  stop_graphics
+  trap - EXIT INT TERM HUP
+  if [ "$code" -ne 0 ]; then
+    say "scrcpy encerrou com código $code. Últimas linhas do log:"
+    tail -n 40 "$LOGFILE" 2>/dev/null || true
+    return "$code"
+  fi
+}
+
+status(){
+  say 'ORBIS MIRROR  •  STATUS'
+  printf 'scrcpy: '; command -v scrcpy >/dev/null 2>&1 && scrcpy --version 2>/dev/null | head -n1 || say 'ausente'
+  printf 'adb: '; command -v adb >/dev/null 2>&1 && adb version 2>/dev/null | head -n1 || say 'ausente'
+  if command -v adb >/dev/null 2>&1; then
+    printf 'celular: '
+    state="$(adb_state || true)"
+    case "$state" in device) say 'conectado e autorizado' ;; unauthorized) say 'conectado, aguardando autorização' ;; *) say 'não conectado' ;; esac
+  fi
+  printf 'perfil padrão: %spx / %sfps / %s bit/s\n' "$SIZE" "$FPS" "$BITRATE"
+}
+
+help(){
+  cat <<'EOF_HELP'
+Uso:
+  orbis-mirror              espelha o celular via USB com perfil suave para CRT
+  orbis-mirror --prepare    instala ADB/scrcpy e dependências
+  orbis-mirror --status     mostra scrcpy, ADB e estado do celular
+  orbis-mirror --video-only desativa áudio do scrcpy para aliviar ainda mais
+  orbis-mirror --lite       480px / 24 fps / 900 kbit: máximo alívio para o Atom
+  orbis-mirror --quality    800px / 30 fps / 2 Mbit: imagem melhor, mais pesada
+
+Primeiro uso no Android:
+  ative Opções do desenvolvedor > Depuração USB e aceite a chave RSA.
+
+O celular faz navegador, site e reprodução. O Itautec recebe apenas um H.264
+reduzido pelo USB e envia a imagem para a TV. Isso evita rodar o site no Atom.
+EOF_HELP
+}
+
+case "${1:-}" in
+  --prepare|prepare) prepare ;;
+  --status|status) status ;;
+  --video-only)
+    AUDIO_MODE=off
+    run_mirror
+    ;;
+  --lite)
+    SIZE=480
+    FPS=24
+    BITRATE=900000
+    VIDEO_BUFFER=120
+    run_mirror
+    ;;
+  --quality)
+    SIZE=800
+    FPS=30
+    BITRATE=2000000
+    VIDEO_BUFFER=80
+    run_mirror
+    ;;
+  --help|-h|help) help ;;
+  '') run_mirror ;;
+  *) help; exit 1 ;;
+esac
