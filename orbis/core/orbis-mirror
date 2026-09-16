@@ -15,11 +15,16 @@ AUDIO_MODE="${ORBIS_MIRROR_AUDIO:-auto}"
 TRANSPORT="${ORBIS_MIRROR_TRANSPORT:-usb}"
 RECONNECT="${ORBIS_MIRROR_RECONNECT:-1}"
 MAX_RETRIES="${ORBIS_MIRROR_RETRIES:-10}"
-SCREEN_OFF="${ORBIS_MIRROR_SCREEN_OFF:-1}"
 STRETCH="${ORBIS_MIRROR_STRETCH:-1}"
+DIM_PHONE="${ORBIS_MIRROR_DIM_PHONE:-1}"
+REAL_SCREEN_OFF="${ORBIS_MIRROR_REAL_SCREEN_OFF:-0}"
 ADB_SERIAL=""
 XORG_OWNED=0
 OPENBOX_OWNED=0
+OLD_BRIGHTNESS=""
+OLD_BRIGHTNESS_MODE=""
+OLD_TIMEOUT=""
+PHONE_TUNED=0
 
 say(){ printf '%s\n' "$*"; }
 need_root(){ [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }; }
@@ -44,7 +49,7 @@ prepare(){
   command -v Xorg >/dev/null 2>&1 || missing="$missing xorg-server"
   command -v openbox >/dev/null 2>&1 || missing="$missing openbox"
   command -v xrandr >/dev/null 2>&1 || missing="$missing xrandr"
-  if [ -n "$missing" ]; then apk add --force-broken-world $missing; fi
+  [ -z "$missing" ] || apk add --force-broken-world $missing
   if ! command -v scrcpy >/dev/null 2>&1; then
     say 'Instalando scrcpy...'
     apk add --force-broken-world scrcpy >/dev/null 2>&1 || \
@@ -148,7 +153,27 @@ start_graphics(){
   if ! pgrep -x openbox >/dev/null 2>&1; then openbox >>"$LOGFILE" 2>&1 & OPENBOX_PID=$!; OPENBOX_OWNED=1; sleep 1; fi
 }
 
+save_phone_display(){
+  [ "$DIM_PHONE" = "1" ] || return 0
+  OLD_BRIGHTNESS="$(adb_cmd shell settings get system screen_brightness 2>/dev/null | tr -d '\r' || true)"
+  OLD_BRIGHTNESS_MODE="$(adb_cmd shell settings get system screen_brightness_mode 2>/dev/null | tr -d '\r' || true)"
+  OLD_TIMEOUT="$(adb_cmd shell settings get system screen_off_timeout 2>/dev/null | tr -d '\r' || true)"
+  adb_cmd shell settings put system screen_brightness_mode 0 >/dev/null 2>&1 || true
+  adb_cmd shell settings put system screen_brightness 1 >/dev/null 2>&1 || true
+  adb_cmd shell settings put system screen_off_timeout 2147483647 >/dev/null 2>&1 || true
+  PHONE_TUNED=1
+}
+
+restore_phone_display(){
+  [ "$PHONE_TUNED" = "1" ] || return 0
+  case "$OLD_BRIGHTNESS_MODE" in 0|1) adb_cmd shell settings put system screen_brightness_mode "$OLD_BRIGHTNESS_MODE" >/dev/null 2>&1 || true ;; esac
+  case "$OLD_BRIGHTNESS" in ''|*[!0-9]*) : ;; *) adb_cmd shell settings put system screen_brightness "$OLD_BRIGHTNESS" >/dev/null 2>&1 || true ;; esac
+  case "$OLD_TIMEOUT" in ''|*[!0-9]*) : ;; *) adb_cmd shell settings put system screen_off_timeout "$OLD_TIMEOUT" >/dev/null 2>&1 || true ;; esac
+  PHONE_TUNED=0
+}
+
 stop_graphics(){
+  restore_phone_display || true
   if [ "$OPENBOX_OWNED" -eq 1 ] && [ -n "${OPENBOX_PID:-}" ]; then kill "$OPENBOX_PID" 2>/dev/null || true; wait "$OPENBOX_PID" 2>/dev/null || true; fi
   if [ "$XORG_OWNED" -eq 1 ] && [ -n "${XORG_PID:-}" ]; then kill "$XORG_PID" 2>/dev/null || true; wait "$XORG_PID" 2>/dev/null || true; fi
 }
@@ -167,13 +192,11 @@ run_once(){
   supports --video-buffer && args="$args --video-buffer=$VIDEO_BUFFER"
   supports --window-borderless && args="$args --window-borderless"
   supports --disable-screensaver && args="$args --disable-screensaver"
-
-  # Não forçamos mais a rotação do Android: em alguns aparelhos isso fazia o vídeo ficar preto.
-  # Para ocupar toda a CRT, esticamos somente a apresentação no lado do Itautec quando suportado.
   if [ "$STRETCH" = "1" ] && supports --render-fit; then args="$args --render-fit=stretched"; fi
 
-  # Desliga só o painel físico do celular; o stream continua sendo capturado pelo scrcpy.
-  if [ "$SCREEN_OFF" = "1" ] && supports --turn-screen-off; then args="$args --turn-screen-off"; fi
+  # Alguns Android/ROMs deixam o stream preto quando o painel físico é desligado.
+  # Por padrão mantemos o display logicamente ligado e apenas reduzimos o brilho ao mínimo.
+  if [ "$REAL_SCREEN_OFF" = "1" ] && supports --turn-screen-off; then args="$args --turn-screen-off"; fi
   if supports --keep-active; then args="$args --keep-active"; elif [ "$TRANSPORT" = "usb" ] && supports --stay-awake; then args="$args --stay-awake"; fi
 
   case "$AUDIO_MODE" in off|0|false|no) supports --no-audio && args="$args --no-audio" ;; esac
@@ -191,13 +214,20 @@ run_mirror(){
   start_graphics
   trap 'stop_graphics' EXIT INT TERM HUP
   export DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=alsa
+  save_phone_display
 
   say ''
   [ "$TRANSPORT" = "wifi" ] && say 'ORBIS MIRROR  •  Wi-Fi -> Itautec -> VGA2AV -> CRT' || say 'ORBIS MIRROR  •  USB -> Itautec -> VGA2AV -> CRT'
   say "Vídeo: H.264, ${SIZE}px, ${FPS} fps, ${BITRATE} bit/s"
-  say 'Tela da TV: fullscreen; sem forçar a rotação do Android.'
-  [ "$STRETCH" = "1" ] && say 'Ajuste: preencher a CRT inteira quando o scrcpy suportar render-fit=stretched.'
-  [ "$SCREEN_OFF" = "1" ] && say 'Tela física do celular: desligada durante o espelhamento quando suportado.'
+  say 'TV: fullscreen; Android sem rotação forçada.'
+  [ "$STRETCH" = "1" ] && say 'CRT: preenchimento total quando render-fit=stretched estiver disponível.'
+  if [ "$REAL_SCREEN_OFF" = "1" ]; then
+    say 'Celular: desligamento físico EXPERIMENTAL (pode gerar tela preta em algumas ROMs).'
+  elif [ "$DIM_PHONE" = "1" ]; then
+    say 'Celular: display continua ativo para o stream, mas brilho fica no mínimo e não apaga sozinho.'
+  else
+    say 'Celular: tela mantida normalmente.'
+  fi
   say 'Para sair: Ctrl+C.'
 
   tries=0; code=0
@@ -218,41 +248,64 @@ status(){
   printf 'USB: '; serial="$(usb_serial || true)"; [ -n "$serial" ] && say "conectado ($serial)" || say 'não conectado'
   printf 'Wi-Fi salvo: '; [ -r "$WIFI_FILE" ] && cat "$WIFI_FILE" || say 'não configurado'
   printf 'IP Itautec: '; host_lan_ip || say 'desconhecido'
-  printf 'Turn-screen-off: '; supports --turn-screen-off && say 'suportado' || say 'não suportado nesta versão'
-  printf 'Render-fit stretched: '; supports --render-fit && say 'suportado' || say 'não suportado nesta versão'
+  printf 'Render-fit stretched: '; supports --render-fit && say 'suportado' || say 'não suportado'
+  printf 'Turn-screen-off: '; supports --turn-screen-off && say 'suportado, mas não usado por padrão' || say 'não suportado'
 }
 
 help(){
   cat <<'EOF_HELP'
 Uso:
-  orbis-mirror               USB, fullscreen, tela física do celular apagada
-  orbis-mirror --wifi-setup  prepara ADB Wi-Fi com o celular ainda no USB
-  orbis-mirror --wifi        espelha pela mesma rede Wi-Fi
-  orbis-mirror --screen-on   mantém a tela física do celular ligada
-  orbis-mirror --no-stretch  preserva proporção e aceita barras pretas
-  orbis-mirror --wifi-off    apaga o destino Wi-Fi salvo
-  orbis-mirror --lite        480px / 24 fps / 900 kbit
-  orbis-mirror --quality     800px / 30 fps / 2 Mbit
-  orbis-mirror --video-only  USB sem áudio do scrcpy
-  orbis-mirror --status      mostra conexões e recursos do scrcpy
+  orbis-mirror                         espelha via USB
+  orbis-mirror --wifi                  espelha via Wi-Fi já configurado
+  orbis-mirror --wifi-setup            configura ADB Wi-Fi usando USB uma vez
+  orbis-mirror --screen-on             não reduz o brilho do celular
+  orbis-mirror --real-screen-off       tenta apagar fisicamente a tela (experimental)
+  orbis-mirror --no-stretch            preserva a proporção original
+  orbis-mirror --lite                  480px / 24 fps / 900 kbit
+  orbis-mirror --quality               800px / 30 fps / 2 Mbit
+  orbis-mirror --video-only            desativa áudio do scrcpy
+  orbis-mirror --wifi-off              apaga o destino Wi-Fi salvo
+  orbis-mirror --status                mostra conexões e recursos
 
-A rotação do Android não é mais forçada, porque alguns aparelhos mostram tela preta.
-Abra o vídeo em paisagem/tela cheia no próprio celular; o Orbis apenas ocupa a CRT.
+As opções podem ser combinadas, por exemplo:
+  orbis-mirror --wifi --screen-on
+  orbis-mirror --wifi --no-stretch
+
+Por padrão o celular NÃO é desligado fisicamente, porque algumas ROMs entregam
+quadros pretos quando o painel apaga. O Orbis deixa brilho em 1 e aumenta o timeout,
+que visualmente quase apaga o telefone sem interromper o vídeo.
 EOF_HELP
 }
 
-case "${1:-}" in
-  --prepare|prepare) prepare ;;
-  --status|status) status ;;
-  --wifi-setup) wifi_setup ;;
-  --wifi) TRANSPORT=wifi; VIDEO_BUFFER=160; run_mirror ;;
-  --screen-on) SCREEN_OFF=0; run_mirror ;;
-  --no-stretch) STRETCH=0; run_mirror ;;
-  --wifi-off) wifi_off ;;
-  --video-only) AUDIO_MODE=off; run_mirror ;;
-  --lite) SIZE=480; FPS=24; BITRATE=900000; VIDEO_BUFFER=120; run_mirror ;;
-  --quality) SIZE=800; FPS=30; BITRATE=2000000; VIDEO_BUFFER=80; run_mirror ;;
-  --help|-h|help) help ;;
-  '') run_mirror ;;
-  *) help; exit 1 ;;
-esac
+DO_PREPARE=0
+DO_STATUS=0
+DO_WIFI_SETUP=0
+DO_WIFI_OFF=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prepare|prepare) DO_PREPARE=1 ;;
+    --status|status) DO_STATUS=1 ;;
+    --wifi-setup) DO_WIFI_SETUP=1 ;;
+    --wifi-off) DO_WIFI_OFF=1 ;;
+    --wifi) TRANSPORT=wifi; VIDEO_BUFFER=160 ;;
+    --usb) TRANSPORT=usb ;;
+    --screen-on) DIM_PHONE=0; REAL_SCREEN_OFF=0 ;;
+    --real-screen-off) DIM_PHONE=0; REAL_SCREEN_OFF=1 ;;
+    --dim-screen) DIM_PHONE=1; REAL_SCREEN_OFF=0 ;;
+    --no-stretch) STRETCH=0 ;;
+    --stretch) STRETCH=1 ;;
+    --video-only) AUDIO_MODE=off ;;
+    --lite) SIZE=480; FPS=24; BITRATE=900000; VIDEO_BUFFER=120 ;;
+    --quality) SIZE=800; FPS=30; BITRATE=2000000; VIDEO_BUFFER=80 ;;
+    --help|-h|help) help; exit 0 ;;
+    *) say "Opção desconhecida: $1"; help; exit 1 ;;
+  esac
+  shift
+done
+
+[ "$DO_PREPARE" -eq 0 ] || { prepare; exit 0; }
+[ "$DO_STATUS" -eq 0 ] || { status; exit 0; }
+[ "$DO_WIFI_SETUP" -eq 0 ] || { wifi_setup; exit 0; }
+[ "$DO_WIFI_OFF" -eq 0 ] || { wifi_off; exit 0; }
+run_mirror
