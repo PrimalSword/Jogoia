@@ -18,6 +18,7 @@ AUDIO_MODE="${ORBIS_MIRROR_AUDIO:-auto}"
 DIM_PHONE="${ORBIS_MIRROR_DIM_PHONE:-0}"
 REAL_SCREEN_OFF="${ORBIS_MIRROR_REAL_SCREEN_OFF:-0}"
 STRETCH="${ORBIS_MIRROR_STRETCH:-1}"
+CRT_FILL="${ORBIS_MIRROR_CRT_FILL:-1}"
 MAX_RETRIES="${ORBIS_MIRROR_RETRIES:-3}"
 ADB_SERIAL=""
 XORG_OWNED=0
@@ -116,6 +117,52 @@ wait_phone(){
   esac
 }
 
+phone_physical_size(){
+  adb_cmd shell wm size 2>/dev/null | tr -d '\r' | awk -F': ' '/Physical size:/ {print $2; exit}'
+}
+
+phone_rotation(){
+  r="$(adb_cmd shell dumpsys input 2>/dev/null | tr -d '\r' | awk -F= '/SurfaceOrientation/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' || true)"
+  if [ -z "$r" ]; then
+    r="$(adb_cmd shell dumpsys display 2>/dev/null | tr -d '\r' | sed -n 's/.*mCurrentOrientation=\([0-3]\).*/\1/p' | head -n1 || true)"
+  fi
+  case "$r" in 0|1|2|3) printf '%s\n' "$r" ;; *) printf '0\n' ;; esac
+}
+
+crt_fill_args(){
+  [ "$CRT_FILL" = "1" ] || return 0
+  supports --crop || return 0
+  ps="$(phone_physical_size || true)"
+  case "$ps" in
+    *x*) : ;;
+    *) return 0 ;;
+  esac
+  w="${ps%x*}"; h="${ps#*x}"
+  case "$w:$h" in
+    *[!0-9:]*|'':*) return 0 ;;
+  esac
+
+  if [ "$w" -le "$h" ]; then
+    # Telefone naturalmente em retrato. Recorta um quadro 3:4 central;
+    # quando o Android está em paisagem ele vira 4:3, perfeito para a CRT.
+    ch=$((w * 4 / 3))
+    if [ "$ch" -le "$h" ]; then
+      y=$(((h - ch) / 2))
+      printf '%s\n' "--crop=${w}:${ch}:0:${y}"
+    fi
+    rot="$(phone_rotation)"
+    case "$rot" in
+      0|2) supports --orientation && printf '%s\n' '--orientation=90' ;;
+    esac
+  else
+    cw=$((h * 4 / 3))
+    if [ "$cw" -le "$w" ]; then
+      x=$(((w - cw) / 2))
+      printf '%s\n' "--crop=${cw}:${h}:${x}:0"
+    fi
+  fi
+}
+
 configure_display(){
   export DISPLAY="$DISPLAY_NUM"
   out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(VGA|HDMI|DP|DVI)' | head -n1 || true)"
@@ -135,7 +182,6 @@ start_graphics(){
 
   if ! xrandr --query >/dev/null 2>&1; then
     rm -f /tmp/.X0-lock 2>/dev/null || true
-    # O X fica no VT7; Ctrl+Alt+F1 sempre deixa uma rota de fuga para o console.
     Xorg "$DISPLAY_NUM" "vt$X_VT" -nolisten tcp >>"$LOGFILE" 2>&1 &
     XORG_PID=$!; XORG_OWNED=1
     n=0
@@ -187,6 +233,11 @@ run_once(){
   supports --disable-screensaver && args="$args --disable-screensaver"
   supports --no-window-aspect-ratio-lock && args="$args --no-window-aspect-ratio-lock"
   supports --window-width && args="$args --window-x=0 --window-y=0 --window-width=800 --window-height=600"
+
+  if [ "$CRT_FILL" = "1" ]; then
+    for a in $(crt_fill_args); do args="$args $a"; done
+  fi
+
   if [ "$STRETCH" = "1" ] && supports --render-fit; then args="$args --render-fit=stretched"; fi
   if [ "$REAL_SCREEN_OFF" = "1" ] && supports --turn-screen-off; then args="$args --turn-screen-off"; fi
   [ "$AUDIO_MODE" = "off" ] && supports --no-audio && args="$args --no-audio"
@@ -225,7 +276,11 @@ run_mirror(){
   trap 'stop_graphics' EXIT INT TERM HUP
   export DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=alsa
   save_phone_display
-  say 'ORBIS MIRROR • fullscreen 800x600 • Ctrl+Alt+F1 = console de emergência'
+  if [ "$TRANSPORT" = "usb" ]; then
+    say 'ORBIS MIRROR • USB estável • CRT 4:3 • Ctrl+Alt+F1 = emergência'
+  else
+    say 'ORBIS MIRROR • Wi-Fi experimental • CRT 4:3 • Ctrl+Alt+F1 = emergência'
+  fi
 
   tries=0
   while :; do
@@ -245,16 +300,20 @@ status(){
   scrcpy --version 2>/dev/null | head -n1 || true
   printf 'Wi-Fi salvo: '; [ -r "$WIFI_FILE" ] && cat "$WIFI_FILE" || say 'não configurado'
   printf 'Render-fit stretched: '; supports --render-fit && say 'sim' || say 'não'
+  printf 'CRT fill automático: '; [ "$CRT_FILL" = "1" ] && say 'sim' || say 'não'
   printf 'X VT: '; say "$X_VT"
   printf 'Tentativas de reconexão: '; say "$MAX_RETRIES"
 }
 
 help(){
   cat <<'EOF'
-Uso:
+Uso recomendado para a CRT:
+  orbis-mirror --usb
+
+Outras opções:
   orbis-mirror --wifi
   orbis-mirror --wifi-setup
-  orbis-mirror --usb
+  orbis-mirror --no-crt-fill
   orbis-mirror --screen-on
   orbis-mirror --dim-screen
   orbis-mirror --real-screen-off
@@ -264,9 +323,12 @@ Uso:
   orbis-mirror --stop
   orbis-mirror --status
 
+O modo CRT recorta automaticamente o centro da tela do celular para 4:3 e só gira
+a imagem no lado do Itautec quando necessário. Não altera a rotação do Android.
+
 Emergência durante o fullscreen:
-  Ctrl+Alt+F1   volta ao console
-  orbis-mirror --stop   encerra scrcpy/Xorg e devolve o terminal
+  Ctrl+Alt+F1
+  orbis-mirror --stop
 EOF
 }
 
@@ -275,16 +337,18 @@ DO_STATUS=0
 DO_STOP=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --wifi) TRANSPORT=wifi; VIDEO_BUFFER=160 ;;
+    --wifi) TRANSPORT=wifi; FPS=24; BITRATE=1000000; VIDEO_BUFFER=120 ;;
     --wifi-setup) DO_SETUP=1 ;;
-    --usb) TRANSPORT=usb ;;
+    --usb) TRANSPORT=usb; FPS=30; BITRATE=1500000; VIDEO_BUFFER=80 ;;
     --screen-on) DIM_PHONE=0; REAL_SCREEN_OFF=0 ;;
     --dim-screen) DIM_PHONE=1; REAL_SCREEN_OFF=0 ;;
     --real-screen-off) REAL_SCREEN_OFF=1; DIM_PHONE=0 ;;
+    --no-crt-fill) CRT_FILL=0 ;;
+    --crt-fill) CRT_FILL=1 ;;
     --no-stretch) STRETCH=0 ;;
     --stretch) STRETCH=1 ;;
     --video-only) AUDIO_MODE=off ;;
-    --lite) SIZE=480; FPS=24; BITRATE=900000; VIDEO_BUFFER=120 ;;
+    --lite) SIZE=480; FPS=24; BITRATE=900000; VIDEO_BUFFER=100 ;;
     --quality) SIZE=800; FPS=30; BITRATE=2000000; VIDEO_BUFFER=80 ;;
     --stop) DO_STOP=1 ;;
     --status) DO_STATUS=1 ;;
