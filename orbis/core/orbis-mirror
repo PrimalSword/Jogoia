@@ -3,6 +3,8 @@ set -eu
 
 REPOS="/etc/apk/repositories"
 LOGFILE="/var/log/orbis-mirror.log"
+STATE_DIR="/var/lib/orbis-mirror"
+WIFI_FILE="$STATE_DIR/wifi-target"
 DISPLAY_NUM="${ORBIS_MIRROR_DISPLAY:-:0}"
 MODE="${ORBIS_MIRROR_MODE:-800x600}"
 SIZE="${ORBIS_MIRROR_SIZE:-640}"
@@ -10,6 +12,13 @@ FPS="${ORBIS_MIRROR_FPS:-30}"
 BITRATE="${ORBIS_MIRROR_BITRATE:-1500000}"
 VIDEO_BUFFER="${ORBIS_MIRROR_BUFFER:-100}"
 AUDIO_MODE="${ORBIS_MIRROR_AUDIO:-auto}"
+TRANSPORT="${ORBIS_MIRROR_TRANSPORT:-usb}"
+FORCE_LANDSCAPE="${ORBIS_MIRROR_LANDSCAPE:-1}"
+RECONNECT="${ORBIS_MIRROR_RECONNECT:-1}"
+MAX_RETRIES="${ORBIS_MIRROR_RETRIES:-10}"
+ADB_SERIAL=""
+OLD_ROTATION=""
+OLD_USER_ROTATION=""
 
 say(){ printf '%s\n' "$*"; }
 need_root(){ [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }; }
@@ -25,6 +34,7 @@ ensure_repositories(){
 prepare(){
   need_root
   ensure_repositories
+  mkdir -p "$STATE_DIR"
   apk update >/dev/null 2>&1 || true
 
   missing=""
@@ -54,14 +64,22 @@ prepare(){
   adb version 2>/dev/null | head -n1 || true
 }
 
-adb_state(){
-  adb devices 2>/dev/null | awk 'NR>1 && NF>=2 {print $2; exit}'
+adb_cmd(){
+  if [ -n "$ADB_SERIAL" ]; then adb -s "$ADB_SERIAL" "$@"; else adb "$@"; fi
 }
 
-wait_phone(){
+usb_serial(){
+  adb devices 2>/dev/null | awk 'NR>1 && $2=="device" && $1 !~ /:/ {print $1; exit}'
+}
+
+any_serial(){
+  adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1; exit}'
+}
+
+wait_usb(){
   adb start-server >/dev/null 2>&1 || true
-  state="$(adb_state || true)"
-  if [ "$state" = "device" ]; then return 0; fi
+  serial="$(usb_serial || true)"
+  if [ -n "$serial" ]; then ADB_SERIAL="$serial"; return 0; fi
 
   say ''
   say 'Conecte o celular por USB.'
@@ -71,24 +89,106 @@ wait_phone(){
 
   count=0
   while [ "$count" -lt 30 ]; do
-    state="$(adb_state || true)"
-    case "$state" in
-      device) say 'Celular autorizado via ADB.'; return 0 ;;
-      unauthorized) printf '.' ;;
-      *) printf '.' ;;
-    esac
+    serial="$(usb_serial || true)"
+    if [ -n "$serial" ]; then
+      ADB_SERIAL="$serial"
+      say 'Celular autorizado via USB.'
+      return 0
+    fi
+    printf '.'
     count=$((count + 1))
     sleep 1
   done
   printf '\n'
 
-  state="$(adb_state || true)"
-  if [ "$state" = "unauthorized" ]; then
-    say 'O celular foi visto, mas ainda não foi autorizado. Aceite a chave RSA na tela do celular e rode orbis-mirror novamente.'
+  if adb devices 2>/dev/null | grep -q '[[:space:]]unauthorized$'; then
+    say 'O celular foi visto, mas ainda não foi autorizado. Aceite a chave RSA e rode novamente.'
   else
-    say 'Nenhum celular autorizado foi encontrado. Tente outro cabo/porta USB e confira a Depuração USB.'
+    say 'Nenhum celular USB autorizado foi encontrado. Tente outro cabo/porta e confira a Depuração USB.'
   fi
   exit 1
+}
+
+phone_ip(){
+  adb_cmd shell ip route 2>/dev/null | tr -d '\r' | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
+}
+
+wifi_setup(){
+  need_root
+  command -v adb >/dev/null 2>&1 || prepare
+  mkdir -p "$STATE_DIR"
+  wait_usb
+  ip="$(phone_ip || true)"
+  [ -n "$ip" ] || { say 'Não consegui descobrir o IP Wi-Fi do celular. Confira se ele está na mesma rede do Itautec.'; exit 1; }
+
+  say "Preparando ADB por Wi-Fi em $ip:5555..."
+  adb_cmd tcpip 5555 >/dev/null 2>&1 || { say 'O Android recusou adb tcpip. Nesse aparelho vamos manter USB.'; exit 1; }
+  sleep 2
+  target="$ip:5555"
+  adb connect "$target" >/dev/null 2>&1 || true
+  if adb -s "$target" get-state 2>/dev/null | grep -q '^device$'; then
+    printf '%s\n' "$target" > "$WIFI_FILE"
+    say 'Wi-Fi configurado. Agora pode tirar o cabo USB.'
+    say 'Para assistir: orbis-mirror --wifi'
+    say 'Observação: ADB pela rede fica ativo até reiniciar o celular ou voltar para modo USB.'
+    return 0
+  fi
+  say 'Não consegui fechar a conexão ADB pelo Wi-Fi. Mantemos USB sem problema.'
+  exit 1
+}
+
+connect_wifi(){
+  command -v adb >/dev/null 2>&1 || prepare
+  [ -r "$WIFI_FILE" ] || { say 'Wi-Fi ainda não foi configurado. Conecte o cabo e rode: orbis-mirror --wifi-setup'; exit 1; }
+  target="$(cat "$WIFI_FILE" 2>/dev/null || true)"
+  [ -n "$target" ] || { say 'Endereço Wi-Fi salvo está vazio. Rode --wifi-setup novamente.'; exit 1; }
+  adb connect "$target" >/dev/null 2>&1 || true
+  if adb -s "$target" get-state 2>/dev/null | grep -q '^device$'; then
+    ADB_SERIAL="$target"
+    return 0
+  fi
+  say "Não consegui conectar ao celular em $target. Ele mudou de IP ou o ADB Wi-Fi caiu."
+  say 'Conecte o USB e rode: orbis-mirror --wifi-setup'
+  exit 1
+}
+
+wifi_off(){
+  need_root
+  command -v adb >/dev/null 2>&1 || exit 0
+  if [ -r "$WIFI_FILE" ]; then
+    target="$(cat "$WIFI_FILE" 2>/dev/null || true)"
+    if [ -n "$target" ]; then adb -s "$target" usb >/dev/null 2>&1 || true; adb disconnect "$target" >/dev/null 2>&1 || true; fi
+    rm -f "$WIFI_FILE"
+  fi
+  say 'ADB Wi-Fi desativado no Orbis. Se o celular não voltar ao USB imediatamente, reinicie a depuração USB ou o aparelho.'
+}
+
+wait_phone(){
+  case "$TRANSPORT" in
+    wifi) connect_wifi ;;
+    usb) wait_usb ;;
+    *)
+      serial="$(usb_serial || true)"
+      if [ -n "$serial" ]; then ADB_SERIAL="$serial"; else connect_wifi; fi
+      ;;
+  esac
+}
+
+save_and_force_landscape(){
+  [ "$FORCE_LANDSCAPE" = "1" ] || return 0
+  OLD_ROTATION="$(adb_cmd shell settings get system accelerometer_rotation 2>/dev/null | tr -d '\r' || true)"
+  OLD_USER_ROTATION="$(adb_cmd shell settings get system user_rotation 2>/dev/null | tr -d '\r' || true)"
+  adb_cmd shell settings put system accelerometer_rotation 0 >/dev/null 2>&1 || true
+  adb_cmd shell settings put system user_rotation 1 >/dev/null 2>&1 || true
+  adb_cmd shell cmd window user-rotation lock 1 >/dev/null 2>&1 || true
+}
+
+restore_rotation(){
+  [ "$FORCE_LANDSCAPE" = "1" ] || return 0
+  [ -n "$ADB_SERIAL" ] || return 0
+  adb_cmd shell cmd window user-rotation free >/dev/null 2>&1 || true
+  case "$OLD_ROTATION" in 0|1) adb_cmd shell settings put system accelerometer_rotation "$OLD_ROTATION" >/dev/null 2>&1 || true ;; esac
+  case "$OLD_USER_ROTATION" in 0|1|2|3) adb_cmd shell settings put system user_rotation "$OLD_USER_ROTATION" >/dev/null 2>&1 || true ;; esac
 }
 
 configure_display(){
@@ -143,6 +243,7 @@ start_graphics(){
 }
 
 stop_graphics(){
+  restore_rotation || true
   if [ "${OPENBOX_OWNED:-0}" -eq 1 ] && [ -n "${OPENBOX_PID:-}" ]; then
     kill "$OPENBOX_PID" 2>/dev/null || true
     wait "$OPENBOX_PID" 2>/dev/null || true
@@ -153,8 +254,24 @@ stop_graphics(){
   fi
 }
 
-supports(){
-  scrcpy --help 2>/dev/null | grep -q -- "$1"
+supports(){ scrcpy --help 2>/dev/null | grep -q -- "$1"; }
+
+reconnect_phone(){
+  case "$TRANSPORT" in
+    wifi)
+      target="$(cat "$WIFI_FILE" 2>/dev/null || true)"
+      [ -n "$target" ] || return 1
+      adb connect "$target" >/dev/null 2>&1 || true
+      adb -s "$target" get-state 2>/dev/null | grep -q '^device$' || return 1
+      ADB_SERIAL="$target"
+      ;;
+    *)
+      serial="$(usb_serial || true)"
+      [ -n "$serial" ] || return 1
+      ADB_SERIAL="$serial"
+      ;;
+  esac
+  return 0
 }
 
 run_mirror(){
@@ -173,8 +290,11 @@ run_mirror(){
   export SDL_VIDEODRIVER=x11
   export SDL_AUDIODRIVER=alsa
 
-  args="--video-codec=h264 --max-size=$SIZE --max-fps=$FPS --video-bit-rate=$BITRATE --fullscreen --no-control"
+  save_and_force_landscape
+
+  args="--serial=$ADB_SERIAL --video-codec=h264 --max-size=$SIZE --max-fps=$FPS --video-bit-rate=$BITRATE --fullscreen --no-control"
   supports --video-buffer && args="$args --video-buffer=$VIDEO_BUFFER"
+  supports --stay-awake && args="$args --stay-awake"
 
   case "$AUDIO_MODE" in
     off|0|false|no) supports --no-audio && args="$args --no-audio" ;;
@@ -182,21 +302,42 @@ run_mirror(){
   esac
 
   say ''
-  say 'ORBIS MIRROR  •  CELULAR -> USB -> ITAUTEC -> VGA2AV -> CRT'
+  if [ "$TRANSPORT" = "wifi" ]; then
+    say 'ORBIS MIRROR  •  CELULAR ~~~ Wi-Fi ~~~ ITAUTEC -> VGA2AV -> CRT'
+  else
+    say 'ORBIS MIRROR  •  CELULAR -> USB -> ITAUTEC -> VGA2AV -> CRT'
+  fi
   say "Vídeo: H.264, limite ${SIZE}px, até ${FPS} fps, bitrate ${BITRATE}, buffer ${VIDEO_BUFFER} ms"
-  say 'Controle: use o próprio celular. Vire-o para paisagem para assistir.'
+  say 'Tela: paisagem forçada durante a sessão + scrcpy em fullscreen.'
+  say 'Controle: use o próprio celular.'
+  [ "$RECONNECT" = "1" ] && say "Reconexão automática: até $MAX_RETRIES tentativas se o link cair."
   if [ "$AUDIO_MODE" = "off" ]; then
     say 'Áudio: desativado no scrcpy; use saída direta do celular se desejar.'
   else
-    say 'Áudio: o scrcpy tentará enviar pelo P2 do Itautec. Se o Android não suportar, use orbis-mirror --video-only.'
+    say 'Áudio: o scrcpy tentará enviar pelo P2 do Itautec. Se o Android não suportar, use --video-only.'
   fi
   say 'Para sair: Ctrl+C.'
   say ''
 
-  log "Iniciando scrcpy: $args"
-  # shellcheck disable=SC2086
-  nice -n -5 scrcpy $args >>"$LOGFILE" 2>&1 || code=$?
-  code="${code:-0}"
+  attempt=0
+  code=0
+  while :; do
+    log "Iniciando scrcpy: $args"
+    code=0
+    # shellcheck disable=SC2086
+    nice -n -5 scrcpy $args >>"$LOGFILE" 2>&1 || code=$?
+    [ "$code" -eq 0 ] && break
+    [ "$RECONNECT" = "1" ] || break
+    attempt=$((attempt + 1))
+    [ "$attempt" -le "$MAX_RETRIES" ] || break
+    say "Espelhamento caiu (código $code). Tentando reconectar $attempt/$MAX_RETRIES..."
+    sleep 2
+    if reconnect_phone; then
+      args="$(printf '%s' "$args" | sed "s/--serial=[^ ]*/--serial=$ADB_SERIAL/")"
+      continue
+    fi
+    sleep 2
+  done
 
   stop_graphics
   trap - EXIT INT TERM HUP
@@ -212,34 +353,49 @@ status(){
   printf 'scrcpy: '; command -v scrcpy >/dev/null 2>&1 && scrcpy --version 2>/dev/null | head -n1 || say 'ausente'
   printf 'adb: '; command -v adb >/dev/null 2>&1 && adb version 2>/dev/null | head -n1 || say 'ausente'
   if command -v adb >/dev/null 2>&1; then
-    printf 'celular: '
-    state="$(adb_state || true)"
-    case "$state" in device) say 'conectado e autorizado' ;; unauthorized) say 'conectado, aguardando autorização' ;; *) say 'não conectado' ;; esac
+    printf 'USB: '; serial="$(usb_serial || true)"; [ -n "$serial" ] && say "conectado ($serial)" || say 'não conectado'
   fi
+  printf 'Wi-Fi salvo: '; [ -r "$WIFI_FILE" ] && say "$(cat "$WIFI_FILE")" || say 'não configurado'
   printf 'perfil padrão: %spx / %sfps / %s bit/s\n' "$SIZE" "$FPS" "$BITRATE"
 }
 
 help(){
   cat <<'EOF_HELP'
 Uso:
-  orbis-mirror              espelha o celular via USB com perfil suave para CRT
+  orbis-mirror              espelha via USB com fullscreen/paisagem e reconexão
+  orbis-mirror --wifi-setup configura ADB Wi-Fi usando o cabo USB uma vez
+  orbis-mirror --wifi       espelha pela mesma rede Wi-Fi
+  orbis-mirror --wifi-off   remove o alvo Wi-Fi salvo e tenta voltar ADB para USB
   orbis-mirror --prepare    instala ADB/scrcpy e dependências
-  orbis-mirror --status     mostra scrcpy, ADB e estado do celular
+  orbis-mirror --status     mostra scrcpy, ADB, USB e alvo Wi-Fi
   orbis-mirror --video-only desativa áudio do scrcpy para aliviar ainda mais
   orbis-mirror --lite       480px / 24 fps / 900 kbit: máximo alívio para o Atom
   orbis-mirror --quality    800px / 30 fps / 2 Mbit: imagem melhor, mais pesada
 
-Primeiro uso no Android:
-  ative Opções do desenvolvedor > Depuração USB e aceite a chave RSA.
+Tela cheia:
+  durante a sessão o Orbis força o Android para paisagem e abre o scrcpy em
+  fullscreen. Ao sair, tenta restaurar a rotação anterior do celular.
 
-O celular faz navegador, site e reprodução. O Itautec recebe apenas um H.264
-reduzido pelo USB e envia a imagem para a TV. Isso evita rodar o site no Atom.
+Wi-Fi:
+  conecte USB uma vez, rode --wifi-setup e depois pode tirar o cabo e usar
+  --wifi. Itautec e celular precisam estar na mesma rede. O modo Wi-Fi usa
+  buffer um pouco maior para absorver variações da rede.
+
+O celular faz navegador, site e reprodução. O Itautec só recebe H.264 reduzido
+e envia a imagem para a TV, por isso fica muito mais leve que o Firefox local.
 EOF_HELP
 }
 
 case "${1:-}" in
   --prepare|prepare) prepare ;;
   --status|status) status ;;
+  --wifi-setup|wifi-setup) wifi_setup ;;
+  --wifi-off|wifi-off) wifi_off ;;
+  --wifi|wifi)
+    TRANSPORT=wifi
+    VIDEO_BUFFER="${ORBIS_MIRROR_BUFFER:-160}"
+    run_mirror
+    ;;
   --video-only)
     AUDIO_MODE=off
     run_mirror
