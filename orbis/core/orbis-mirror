@@ -11,6 +11,7 @@ BITRATE="${ORBIS_MIRROR_BITRATE:-1500000}"
 VIDEO_BUFFER="${ORBIS_MIRROR_BUFFER:-100}"
 AUDIO_MODE="${ORBIS_MIRROR_AUDIO:-auto}"
 ORIENTATION="${ORBIS_MIRROR_ORIENTATION:-0}"
+FILL="${ORBIS_MIRROR_FILL:-1}"
 
 say(){ printf '%s\n' "$*"; }
 need_root(){ [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }; }
@@ -172,16 +173,19 @@ run_mirror(){
   export SDL_VIDEODRIVER=x11
   export SDL_AUDIODRIVER=alsa
 
-  # Perfil original que ficou liso no Itautec: sem crop, sem stretch,
-  # sem Wi-Fi, sem rotação automática e sem filtros extras.
+  # Mantém exatamente o stream USB que ficou liso: H.264 / 640 / 30 / 1,5 Mbit.
+  # O preenchimento é só na renderização da janela; não muda encode, bitrate ou buffer.
   args="--video-codec=h264 --max-size=$SIZE --max-fps=$FPS --video-bit-rate=$BITRATE --fullscreen --no-control"
   supports --video-buffer && args="$args --video-buffer=$VIDEO_BUFFER"
 
-  # Mantém a imagem na orientação normal. Os modos 90/270 ficam só como ajuste manual.
   if supports --display-orientation; then
     args="$args --display-orientation=$ORIENTATION"
   elif supports --orientation; then
     args="$args --orientation=$ORIENTATION"
+  fi
+
+  if [ "$FILL" = "1" ] && supports --render-fit; then
+    args="$args --render-fit=stretched"
   fi
 
   case "$AUDIO_MODE" in
@@ -190,9 +194,10 @@ run_mirror(){
   esac
 
   say ''
-  say 'ORBIS MIRROR • USB suave • perfil original restaurado'
+  say 'ORBIS MIRROR • USB suave • perfil original + preenchimento da CRT'
   say "Vídeo: H.264, ${SIZE}px, ${FPS} fps, ${BITRATE} bit/s, buffer ${VIDEO_BUFFER} ms"
   say 'Orientação: normal. Deixe o celular em paisagem para assistir.'
+  if [ "$FILL" = "1" ]; then say 'Tela: preenchimento total ativo (sem alterar o stream).'; fi
   say 'Para sair: Ctrl+C.'
   say ''
 
@@ -217,14 +222,15 @@ status(){
   printf 'celular: '
   state="$(adb_state || true)"
   case "$state" in device) say 'conectado e autorizado' ;; unauthorized) say 'aguardando autorização' ;; *) say 'não conectado' ;; esac
-  printf 'perfil: %spx / %sfps / %s bit/s / orientação %s\n' "$SIZE" "$FPS" "$BITRATE" "$ORIENTATION"
+  printf 'perfil: %spx / %sfps / %s bit/s / orientação %s / fill %s\n' "$SIZE" "$FPS" "$BITRATE" "$ORIENTATION" "$FILL"
 }
 
 help(){
   cat <<'EOF_HELP'
 Uso:
-  orbis-mirror                USB, perfil original suave
+  orbis-mirror                USB suave + preenche a CRT
   orbis-mirror --usb          igual ao comando acima
+  orbis-mirror --no-fill      perfil suave sem esticar a imagem
   orbis-mirror --rotate-cw    gira só a imagem 90° se necessário
   orbis-mirror --rotate-ccw   gira só a imagem 270° se necessário
   orbis-mirror --video-only   desativa áudio do scrcpy
@@ -233,8 +239,8 @@ Uso:
   orbis-mirror --prepare      instala dependências
   orbis-mirror --status       mostra estado
 
-O padrão voltou ao primeiro modo USB que ficou liso: nada de Wi-Fi, crop 4:3,
-stretch, rotação automática ou alterações na tela do celular.
+O stream continua sendo o primeiro modo USB que ficou liso. O preenchimento usa
+somente render-fit=stretched na saída, sem crop, Wi-Fi ou processamento extra do vídeo.
 EOF_HELP
 }
 
@@ -242,6 +248,7 @@ case "${1:-}" in
   --prepare|prepare) prepare ;;
   --status|status) status ;;
   --usb|'') run_mirror ;;
+  --no-fill) FILL=0; run_mirror ;;
   --rotate-cw) ORIENTATION=90; run_mirror ;;
   --rotate-ccw) ORIENTATION=270; run_mirror ;;
   --video-only) AUDIO_MODE=off; run_mirror ;;
