@@ -52,11 +52,6 @@ mute_noise_sources(){
   amixer -q sset 'Loopback Mixing' Disabled >/dev/null 2>&1 || true
   amixer -q sset 'Analog Loopback' Disabled >/dev/null 2>&1 || true
 }
-apply_tv_boost(){
-  if [ -x /usr/local/bin/orbis-boost ]; then
-    /usr/local/bin/orbis-boost --runtime >>"$LOGFILE" 2>&1 || true
-  fi
-}
 clean_audio(){
   need_root
   ensure_packages
@@ -66,7 +61,6 @@ clean_audio(){
   mute_noise_sources
   set_output_levels
   command -v alsactl >/dev/null 2>&1 && alsactl store >/dev/null 2>&1 || true
-  apply_tv_boost
   say 'Perfil anti-BZZ aplicado: P2 priorizado, entradas/loopbacks mutados e power-save de áudio desativado.'
 }
 prepare(){
@@ -93,10 +87,6 @@ status(){
   if [ -r /sys/module/snd_hda_intel/parameters/power_save ]; then
     printf 'snd_hda_intel power_save: %s\n' "$(cat /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || printf '?')"
   fi
-  if [ -x /usr/local/bin/orbis-boost ]; then
-    say ''
-    /usr/local/bin/orbis-boost --status 2>/dev/null || true
-  fi
 }
 test_audio(){
   clean_audio
@@ -110,22 +100,15 @@ Uso:
   orbis-audio --prepare   instala ALSA e aplica o perfil anti-BZZ
   orbis-audio --clean     aplica o perfil anti-BZZ para saída P2
   orbis-audio --test      aplica o perfil e toca um teste estéreo
-  orbis-audio --status    mostra áudio e, quando disponível, o Orbis Boost
+  orbis-audio --status    mostra placas, saídas e controles relevantes
 
 Perfil anti-BZZ:
   prioriza PCM/Headphone, muta microfones, boosts, captura, line-in, beep e
   loopbacks quando existirem e desativa o power-save do snd_hda_intel.
 
-Modo TV:
-  quando o orbis-boost estiver instalado, este comando também aplica o perfil
-  de vídeo leve, cache em RAM e AdBlock reforçado antes de abrir o Firefox.
-
 IMPORTANTE:
-  VGA não transporta áudio. O som deve sair fisicamente pela saída de
-  fones/P2 do Itautec para a entrada AUDIO IN do VGA2AV, ou diretamente para
-  os RCA vermelho/branco da TV com um cabo P2 -> 2 RCA.
-  Se o BZZ variar com a luminosidade da imagem mesmo com este perfil, a parte
-  restante do ruído provavelmente está sendo criada no VGA2AV/alimentação.
+  O perfil de áudio NÃO altera mais codecs, cache ou fila de vídeo. Isso evita
+  regressão de fluidez no Atom. VGA não transporta áudio: o som sai pelo P2.
 EOF_HELP
 }
 
