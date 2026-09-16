@@ -13,12 +13,11 @@ BITRATE="${ORBIS_MIRROR_BITRATE:-1500000}"
 VIDEO_BUFFER="${ORBIS_MIRROR_BUFFER:-100}"
 AUDIO_MODE="${ORBIS_MIRROR_AUDIO:-auto}"
 TRANSPORT="${ORBIS_MIRROR_TRANSPORT:-usb}"
-FORCE_LANDSCAPE="${ORBIS_MIRROR_LANDSCAPE:-1}"
 RECONNECT="${ORBIS_MIRROR_RECONNECT:-1}"
 MAX_RETRIES="${ORBIS_MIRROR_RETRIES:-10}"
+SCREEN_OFF="${ORBIS_MIRROR_SCREEN_OFF:-1}"
+STRETCH="${ORBIS_MIRROR_STRETCH:-1}"
 ADB_SERIAL=""
-OLD_ROTATION=""
-OLD_USER_ROTATION=""
 XORG_OWNED=0
 OPENBOX_OWNED=0
 
@@ -26,10 +25,7 @@ say(){ printf '%s\n' "$*"; }
 need_root(){ [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }; }
 log(){ mkdir -p /var/log; printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf agora)" "$*" >> "$LOGFILE" 2>/dev/null || true; }
 have_timeout(){ command -v timeout >/dev/null 2>&1; }
-with_timeout(){
-  secs="$1"; shift
-  if have_timeout; then timeout "$secs" "$@"; else "$@"; fi
-}
+with_timeout(){ secs="$1"; shift; if have_timeout; then timeout "$secs" "$@"; else "$@"; fi; }
 
 ensure_repositories(){
   mkdir -p /etc/apk
@@ -48,24 +44,21 @@ prepare(){
   command -v Xorg >/dev/null 2>&1 || missing="$missing xorg-server"
   command -v openbox >/dev/null 2>&1 || missing="$missing openbox"
   command -v xrandr >/dev/null 2>&1 || missing="$missing xrandr"
-  if [ -n "$missing" ]; then
-    say "Instalando dependências básicas:$missing"
-    apk add --force-broken-world $missing
-  fi
+  if [ -n "$missing" ]; then apk add --force-broken-world $missing; fi
   if ! command -v scrcpy >/dev/null 2>&1; then
     say 'Instalando scrcpy...'
-    if ! apk add --force-broken-world scrcpy >/dev/null 2>&1; then
+    apk add --force-broken-world scrcpy >/dev/null 2>&1 || \
       apk add --force-broken-world --repository 'https://dl-cdn.alpinelinux.org/alpine/v3.23/community' scrcpy >/dev/null 2>&1 || {
         say 'Não consegui instalar o scrcpy automaticamente.'
         exit 1
       }
-    fi
   fi
   say 'ORBIS Mirror preparado.'
   scrcpy --version 2>/dev/null | head -n1 || true
   adb version 2>/dev/null | head -n1 || true
 }
 
+supports(){ scrcpy --help 2>/dev/null | grep -q -- "$1"; }
 adb_cmd(){ if [ -n "$ADB_SERIAL" ]; then adb -s "$ADB_SERIAL" "$@"; else adb "$@"; fi; }
 usb_serial(){ adb devices 2>/dev/null | awk 'NR>1 && $2=="device" && $1 !~ /:/ {print $1; exit}'; }
 
@@ -74,194 +67,115 @@ wait_usb(){
   serial="$(usb_serial || true)"
   if [ -n "$serial" ]; then ADB_SERIAL="$serial"; return 0; fi
   say ''
-  say 'Conecte o celular por USB.'
-  say 'No Android: Opções do desenvolvedor > Depuração USB = ATIVADA.'
-  say 'Aceite “Permitir depuração USB?” e marque “Sempre permitir”.'
-  say 'Aguardando o celular por até 30 segundos...'
+  say 'Conecte o celular por USB e mantenha a Depuração USB ativada.'
+  say 'Se aparecer a chave RSA, marque “Sempre permitir” e aceite.'
   count=0
   while [ "$count" -lt 30 ]; do
     serial="$(usb_serial || true)"
     if [ -n "$serial" ]; then ADB_SERIAL="$serial"; say 'Celular autorizado via USB.'; return 0; fi
-    printf '.'
-    count=$((count + 1)); sleep 1
+    printf '.'; count=$((count + 1)); sleep 1
   done
-  printf '\n'
-  say 'Nenhum celular USB autorizado foi encontrado.'
-  exit 1
+  printf '\n'; say 'Nenhum celular USB autorizado foi encontrado.'; exit 1
 }
 
 phone_wifi_ip(){
-  # IMPORTANTE: não pega o primeiro "src" do Android, pois ele pode ser da rede móvel
-  # (ex.: 10.x.x.x). Preferimos explicitamente interfaces Wi-Fi wlan*/wifi*.
   ip="$(adb_cmd shell ip -4 route 2>/dev/null | tr -d '\r' | awk '
-    $0 ~ / dev (wlan[0-9]*|wifi[0-9]*)/ {
-      for(i=1;i<=NF;i++) if($i=="src" && $(i+1)!="") {print $(i+1); exit}
-    }' || true)"
+    $0 ~ / dev (wlan[0-9]*|wifi[0-9]*)/ {for(i=1;i<=NF;i++) if($i=="src" && $(i+1)!="") {print $(i+1); exit}}' || true)"
   if [ -n "$ip" ]; then printf '%s\n' "$ip"; return 0; fi
-
-  ip="$(adb_cmd shell ip -o -4 addr show 2>/dev/null | tr -d '\r' | awk '
-    $2 ~ /^(wlan|wifi)[0-9]*/ && $3=="inet" {split($4,a,"/"); print a[1]; exit}' || true)"
-  [ -n "$ip" ] && printf '%s\n' "$ip"
+  adb_cmd shell ip -o -4 addr show 2>/dev/null | tr -d '\r' | awk '$2 ~ /^(wlan|wifi)[0-9]*/ && $3=="inet" {split($4,a,"/"); print a[1]; exit}'
 }
 
-host_lan_ip(){
-  ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}'
-}
-
-same_simple_lan(){
-  a="$1"; b="$2"
-  [ -n "$a" ] && [ -n "$b" ] || return 1
-  pa="$(printf '%s' "$a" | awk -F. '{print $1"."$2"."$3}')"
-  pb="$(printf '%s' "$b" | awk -F. '{print $1"."$2"."$3}')"
-  [ "$pa" = "$pb" ]
-}
+host_lan_ip(){ ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}'; }
+same_simple_lan(){ a="$1"; b="$2"; [ -n "$a" ] && [ -n "$b" ] || return 1; pa="$(printf '%s' "$a" | awk -F. '{print $1"."$2"."$3}')"; pb="$(printf '%s' "$b" | awk -F. '{print $1"."$2"."$3}')"; [ "$pa" = "$pb" ]; }
 
 wifi_setup(){
   need_root
   command -v adb >/dev/null 2>&1 || prepare
   mkdir -p "$STATE_DIR"
   wait_usb
-  phone_ip="$(phone_wifi_ip || true)"
-  pc_ip="$(host_lan_ip || true)"
-
-  [ -n "$phone_ip" ] || {
-    say 'Não achei um IP da interface Wi-Fi do celular.'
-    say 'Confirme que o celular está conectado ao MESMO Wi-Fi do Itautec.'
-    exit 1
-  }
-
+  phone_ip="$(phone_wifi_ip || true)"; pc_ip="$(host_lan_ip || true)"
+  [ -n "$phone_ip" ] || { say 'Não achei o IP Wi-Fi do celular. Confirme que ele está no mesmo Wi-Fi do Itautec.'; exit 1; }
   say "IP do Itautec: ${pc_ip:-desconhecido}"
   say "IP Wi-Fi do celular: $phone_ip"
-  if [ -n "$pc_ip" ] && ! same_simple_lan "$pc_ip" "$phone_ip"; then
-    say 'Os endereços não parecem estar na mesma rede local.'
-    say 'Conecte o celular ao mesmo Wi-Fi do Itautec e tente de novo.'
-    exit 1
-  fi
-
+  if [ -n "$pc_ip" ] && ! same_simple_lan "$pc_ip" "$phone_ip"; then say 'Celular e Itautec não parecem estar na mesma rede local.'; exit 1; fi
   say "Preparando ADB por Wi-Fi em $phone_ip:5555..."
   adb_cmd tcpip 5555 >/dev/null 2>&1 || { say 'O Android recusou adb tcpip; mantenha USB.'; exit 1; }
   sleep 2
   target="$phone_ip:5555"
-
-  # Nunca deixa adb connect travar indefinidamente.
   with_timeout 6 adb connect "$target" >/dev/null 2>&1 || true
   if with_timeout 4 adb -s "$target" get-state 2>/dev/null | grep -q '^device$'; then
     printf '%s\n' "$target" > "$WIFI_FILE"
     ADB_SERIAL="$target"
-    say 'Wi-Fi configurado com sucesso.'
-    say 'Pode tirar o cabo USB e rodar: orbis-mirror --wifi'
+    say 'Wi-Fi configurado com sucesso. Pode tirar o cabo e usar: orbis-mirror --wifi'
     return 0
   fi
-
-  say 'Não fechou a conexão ADB pelo Wi-Fi em até 6 segundos.'
-  say 'Nada estragou: o modo USB continua disponível normalmente.'
+  say 'Não fechou conexão ADB via Wi-Fi. O USB continua funcionando normalmente.'
   exit 1
 }
 
 connect_wifi(){
   command -v adb >/dev/null 2>&1 || prepare
-  [ -r "$WIFI_FILE" ] || { say 'Wi-Fi ainda não configurado. Rode com USB: orbis-mirror --wifi-setup'; exit 1; }
+  [ -r "$WIFI_FILE" ] || { say 'Wi-Fi não configurado. Com o USB conectado, rode: orbis-mirror --wifi-setup'; exit 1; }
   target="$(cat "$WIFI_FILE" 2>/dev/null || true)"
-  [ -n "$target" ] || { rm -f "$WIFI_FILE"; say 'Destino Wi-Fi inválido; rode --wifi-setup novamente.'; exit 1; }
+  [ -n "$target" ] || { rm -f "$WIFI_FILE"; exit 1; }
   with_timeout 6 adb connect "$target" >/dev/null 2>&1 || true
   if with_timeout 4 adb -s "$target" get-state 2>/dev/null | grep -q '^device$'; then ADB_SERIAL="$target"; return 0; fi
-  say "Não consegui conectar em $target. O IP mudou ou o ADB Wi-Fi caiu."
-  say 'Conecte o USB e rode: orbis-mirror --wifi-setup'
-  exit 1
+  say "Não consegui conectar em $target. O IP pode ter mudado."; say 'Conecte o USB e rode --wifi-setup novamente.'; exit 1
 }
 
-wifi_off(){
-  need_root
-  if [ -r "$WIFI_FILE" ]; then
-    target="$(cat "$WIFI_FILE" 2>/dev/null || true)"
-    [ -n "$target" ] && with_timeout 3 adb disconnect "$target" >/dev/null 2>&1 || true
-    rm -f "$WIFI_FILE"
-  fi
-  say 'Destino ADB Wi-Fi apagado do Orbis.'
-}
-
+wifi_off(){ need_root; if [ -r "$WIFI_FILE" ]; then target="$(cat "$WIFI_FILE" 2>/dev/null || true)"; [ -n "$target" ] && with_timeout 3 adb disconnect "$target" >/dev/null 2>&1 || true; rm -f "$WIFI_FILE"; fi; say 'Destino ADB Wi-Fi apagado.'; }
 wait_phone(){ case "$TRANSPORT" in wifi) connect_wifi ;; *) wait_usb ;; esac; }
-
-save_and_force_landscape(){
-  [ "$FORCE_LANDSCAPE" = "1" ] || return 0
-  OLD_ROTATION="$(adb_cmd shell settings get system accelerometer_rotation 2>/dev/null | tr -d '\r' || true)"
-  OLD_USER_ROTATION="$(adb_cmd shell settings get system user_rotation 2>/dev/null | tr -d '\r' || true)"
-  adb_cmd shell settings put system accelerometer_rotation 0 >/dev/null 2>&1 || true
-  adb_cmd shell settings put system user_rotation 1 >/dev/null 2>&1 || true
-  adb_cmd shell cmd window user-rotation lock 1 >/dev/null 2>&1 || true
-}
-
-restore_rotation(){
-  [ "$FORCE_LANDSCAPE" = "1" ] || return 0
-  [ -n "$ADB_SERIAL" ] || return 0
-  adb_cmd shell cmd window user-rotation free >/dev/null 2>&1 || true
-  case "$OLD_ROTATION" in 0|1) adb_cmd shell settings put system accelerometer_rotation "$OLD_ROTATION" >/dev/null 2>&1 || true ;; esac
-  case "$OLD_USER_ROTATION" in 0|1|2|3) adb_cmd shell settings put system user_rotation "$OLD_USER_ROTATION" >/dev/null 2>&1 || true ;; esac
-}
 
 configure_display(){
   export DISPLAY="$DISPLAY_NUM"
   out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(VGA|HDMI|DP|DVI)' | head -n1 || true)"
   [ -n "$out" ] || out="$(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1; exit}' || true)"
   [ -n "$out" ] || return 0
-  for internal in $(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(LVDS|eDP|DSI)' || true); do
-    [ "$internal" = "$out" ] || xrandr --output "$internal" --off >/dev/null 2>&1 || true
-  done
-  if xrandr --query 2>/dev/null | grep -q "^[[:space:]]*$MODE"; then
-    xrandr --output "$out" --mode "$MODE" --primary --pos 0x0 >/dev/null 2>&1 || true
-  elif xrandr --query 2>/dev/null | grep -q '^[[:space:]]*640x480'; then
-    xrandr --output "$out" --mode 640x480 --primary --pos 0x0 >/dev/null 2>&1 || true
-  fi
+  for internal in $(xrandr --query 2>/dev/null | awk '$2=="connected" {print $1}' | grep -E '^(LVDS|eDP|DSI)' || true); do [ "$internal" = "$out" ] || xrandr --output "$internal" --off >/dev/null 2>&1 || true; done
+  if xrandr --query 2>/dev/null | grep -q "^[[:space:]]*$MODE"; then xrandr --output "$out" --mode "$MODE" --primary --pos 0x0 >/dev/null 2>&1 || true
+  elif xrandr --query 2>/dev/null | grep -q '^[[:space:]]*640x480'; then xrandr --output "$out" --mode 640x480 --primary --pos 0x0 >/dev/null 2>&1 || true; fi
 }
 
 start_graphics(){
-  export DISPLAY="$DISPLAY_NUM"
-  XORG_OWNED=0; OPENBOX_OWNED=0
+  export DISPLAY="$DISPLAY_NUM"; XORG_OWNED=0; OPENBOX_OWNED=0
   if ! xrandr --query >/dev/null 2>&1; then
     rm -f /tmp/.X0-lock 2>/dev/null || true
-    Xorg "$DISPLAY_NUM" vt1 -keeptty -nolisten tcp >>"$LOGFILE" 2>&1 &
-    XORG_PID=$!; XORG_OWNED=1
-    count=0
-    while [ "$count" -lt 40 ]; do
-      xrandr --query >/dev/null 2>&1 && break
-      kill -0 "$XORG_PID" 2>/dev/null || break
-      count=$((count + 1)); sleep 0.25
-    done
+    Xorg "$DISPLAY_NUM" vt1 -keeptty -nolisten tcp >>"$LOGFILE" 2>&1 & XORG_PID=$!; XORG_OWNED=1
+    count=0; while [ "$count" -lt 40 ]; do xrandr --query >/dev/null 2>&1 && break; kill -0 "$XORG_PID" 2>/dev/null || break; count=$((count + 1)); sleep 0.25; done
   fi
   xrandr --query >/dev/null 2>&1 || { say 'O Xorg não iniciou.'; exit 1; }
   configure_display
-  if ! pgrep -x openbox >/dev/null 2>&1; then
-    openbox >>"$LOGFILE" 2>&1 & OPENBOX_PID=$!; OPENBOX_OWNED=1; sleep 1
-  fi
+  if ! pgrep -x openbox >/dev/null 2>&1; then openbox >>"$LOGFILE" 2>&1 & OPENBOX_PID=$!; OPENBOX_OWNED=1; sleep 1; fi
 }
 
 stop_graphics(){
-  restore_rotation || true
   if [ "$OPENBOX_OWNED" -eq 1 ] && [ -n "${OPENBOX_PID:-}" ]; then kill "$OPENBOX_PID" 2>/dev/null || true; wait "$OPENBOX_PID" 2>/dev/null || true; fi
   if [ "$XORG_OWNED" -eq 1 ] && [ -n "${XORG_PID:-}" ]; then kill "$XORG_PID" 2>/dev/null || true; wait "$XORG_PID" 2>/dev/null || true; fi
 }
 
-supports(){ scrcpy --help 2>/dev/null | grep -q -- "$1"; }
-
 reconnect_phone(){
   if [ "$TRANSPORT" = "wifi" ]; then
-    [ -r "$WIFI_FILE" ] || return 1
-    target="$(cat "$WIFI_FILE" 2>/dev/null || true)"
-    [ -n "$target" ] || return 1
+    [ -r "$WIFI_FILE" ] || return 1; target="$(cat "$WIFI_FILE" 2>/dev/null || true)"; [ -n "$target" ] || return 1
     with_timeout 5 adb connect "$target" >/dev/null 2>&1 || true
-    with_timeout 3 adb -s "$target" get-state 2>/dev/null | grep -q '^device$' || return 1
-    ADB_SERIAL="$target"
-  else
-    serial="$(usb_serial || true)"; [ -n "$serial" ] || return 1; ADB_SERIAL="$serial"
-  fi
+    with_timeout 3 adb -s "$target" get-state 2>/dev/null | grep -q '^device$' || return 1; ADB_SERIAL="$target"
+  else serial="$(usb_serial || true)"; [ -n "$serial" ] || return 1; ADB_SERIAL="$serial"; fi
   return 0
 }
 
 run_once(){
   args="--serial=$ADB_SERIAL --video-codec=h264 --max-size=$SIZE --max-fps=$FPS --video-bit-rate=$BITRATE --fullscreen --no-control"
   supports --video-buffer && args="$args --video-buffer=$VIDEO_BUFFER"
-  supports --stay-awake && args="$args --stay-awake"
   supports --window-borderless && args="$args --window-borderless"
+  supports --disable-screensaver && args="$args --disable-screensaver"
+
+  # Não forçamos mais a rotação do Android: em alguns aparelhos isso fazia o vídeo ficar preto.
+  # Para ocupar toda a CRT, esticamos somente a apresentação no lado do Itautec quando suportado.
+  if [ "$STRETCH" = "1" ] && supports --render-fit; then args="$args --render-fit=stretched"; fi
+
+  # Desliga só o painel físico do celular; o stream continua sendo capturado pelo scrcpy.
+  if [ "$SCREEN_OFF" = "1" ] && supports --turn-screen-off; then args="$args --turn-screen-off"; fi
+  if supports --keep-active; then args="$args --keep-active"; elif [ "$TRANSPORT" = "usb" ] && supports --stay-awake; then args="$args --stay-awake"; fi
+
   case "$AUDIO_MODE" in off|0|false|no) supports --no-audio && args="$args --no-audio" ;; esac
   log "scrcpy $args"
   # shellcheck disable=SC2086
@@ -277,28 +191,25 @@ run_mirror(){
   start_graphics
   trap 'stop_graphics' EXIT INT TERM HUP
   export DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=alsa
-  save_and_force_landscape
 
   say ''
   [ "$TRANSPORT" = "wifi" ] && say 'ORBIS MIRROR  •  Wi-Fi -> Itautec -> VGA2AV -> CRT' || say 'ORBIS MIRROR  •  USB -> Itautec -> VGA2AV -> CRT'
   say "Vídeo: H.264, ${SIZE}px, ${FPS} fps, ${BITRATE} bit/s"
-  say 'Janela: fullscreen; celular forçado para paisagem durante a sessão.'
+  say 'Tela da TV: fullscreen; sem forçar a rotação do Android.'
+  [ "$STRETCH" = "1" ] && say 'Ajuste: preencher a CRT inteira quando o scrcpy suportar render-fit=stretched.'
+  [ "$SCREEN_OFF" = "1" ] && say 'Tela física do celular: desligada durante o espelhamento quando suportado.'
   say 'Para sair: Ctrl+C.'
 
-  tries=0
+  tries=0; code=0
   while :; do
-    code=0
-    run_once || code=$?
+    code=0; run_once || code=$?
     [ "$RECONNECT" = "1" ] || break
-    tries=$((tries + 1))
-    [ "$tries" -le "$MAX_RETRIES" ] || break
-    say "Link caiu. Tentando reconectar ($tries/$MAX_RETRIES)..."
-    sleep 2
+    tries=$((tries + 1)); [ "$tries" -le "$MAX_RETRIES" ] || break
+    say "Link caiu. Tentando reconectar ($tries/$MAX_RETRIES)..."; sleep 2
     reconnect_phone || { sleep 2; continue; }
   done
-  stop_graphics
-  trap - EXIT INT TERM HUP
-  [ "${code:-0}" -eq 0 ] || { say "scrcpy encerrou com código ${code:-1}."; tail -n 30 "$LOGFILE" 2>/dev/null || true; return "${code:-1}"; }
+  stop_graphics; trap - EXIT INT TERM HUP
+  [ "$code" -eq 0 ] || { say "scrcpy encerrou com código $code."; tail -n 30 "$LOGFILE" 2>/dev/null || true; return "$code"; }
 }
 
 status(){
@@ -307,22 +218,26 @@ status(){
   printf 'USB: '; serial="$(usb_serial || true)"; [ -n "$serial" ] && say "conectado ($serial)" || say 'não conectado'
   printf 'Wi-Fi salvo: '; [ -r "$WIFI_FILE" ] && cat "$WIFI_FILE" || say 'não configurado'
   printf 'IP Itautec: '; host_lan_ip || say 'desconhecido'
+  printf 'Turn-screen-off: '; supports --turn-screen-off && say 'suportado' || say 'não suportado nesta versão'
+  printf 'Render-fit stretched: '; supports --render-fit && say 'suportado' || say 'não suportado nesta versão'
 }
 
 help(){
   cat <<'EOF_HELP'
 Uso:
-  orbis-mirror               espelha via USB
-  orbis-mirror --wifi-setup  prepara ADB Wi-Fi usando o IP da interface wlan do celular
-  orbis-mirror --wifi        espelha sem cabo, pela mesma rede Wi-Fi
+  orbis-mirror               USB, fullscreen, tela física do celular apagada
+  orbis-mirror --wifi-setup  prepara ADB Wi-Fi com o celular ainda no USB
+  orbis-mirror --wifi        espelha pela mesma rede Wi-Fi
+  orbis-mirror --screen-on   mantém a tela física do celular ligada
+  orbis-mirror --no-stretch  preserva proporção e aceita barras pretas
   orbis-mirror --wifi-off    apaga o destino Wi-Fi salvo
   orbis-mirror --lite        480px / 24 fps / 900 kbit
   orbis-mirror --quality     800px / 30 fps / 2 Mbit
   orbis-mirror --video-only  USB sem áudio do scrcpy
-  orbis-mirror --status      mostra conexões
+  orbis-mirror --status      mostra conexões e recursos do scrcpy
 
-O setup Wi-Fi ignora IP de rede móvel e usa apenas wlan*/wifi*. Todas as tentativas
-ADB têm timeout para nunca ficar eternamente parado em “Preparando ADB por Wi-Fi”.
+A rotação do Android não é mais forçada, porque alguns aparelhos mostram tela preta.
+Abra o vídeo em paisagem/tela cheia no próprio celular; o Orbis apenas ocupa a CRT.
 EOF_HELP
 }
 
@@ -331,6 +246,8 @@ case "${1:-}" in
   --status|status) status ;;
   --wifi-setup) wifi_setup ;;
   --wifi) TRANSPORT=wifi; VIDEO_BUFFER=160; run_mirror ;;
+  --screen-on) SCREEN_OFF=0; run_mirror ;;
+  --no-stretch) STRETCH=0; run_mirror ;;
   --wifi-off) wifi_off ;;
   --video-only) AUDIO_MODE=off; run_mirror ;;
   --lite) SIZE=480; FPS=24; BITRATE=900000; VIDEO_BUFFER=120; run_mirror ;;
