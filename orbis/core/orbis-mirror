@@ -16,7 +16,7 @@ TRANSPORT="${ORBIS_MIRROR_TRANSPORT:-usb}"
 RECONNECT="${ORBIS_MIRROR_RECONNECT:-1}"
 MAX_RETRIES="${ORBIS_MIRROR_RETRIES:-10}"
 STRETCH="${ORBIS_MIRROR_STRETCH:-1}"
-DIM_PHONE="${ORBIS_MIRROR_DIM_PHONE:-1}"
+DIM_PHONE="${ORBIS_MIRROR_DIM_PHONE:-0}"
 REAL_SCREEN_OFF="${ORBIS_MIRROR_REAL_SCREEN_OFF:-0}"
 ADB_SERIAL=""
 XORG_OWNED=0
@@ -159,7 +159,7 @@ save_phone_display(){
   OLD_BRIGHTNESS_MODE="$(adb_cmd shell settings get system screen_brightness_mode 2>/dev/null | tr -d '\r' || true)"
   OLD_TIMEOUT="$(adb_cmd shell settings get system screen_off_timeout 2>/dev/null | tr -d '\r' || true)"
   adb_cmd shell settings put system screen_brightness_mode 0 >/dev/null 2>&1 || true
-  adb_cmd shell settings put system screen_brightness 1 >/dev/null 2>&1 || true
+  adb_cmd shell settings put system screen_brightness 20 >/dev/null 2>&1 || true
   adb_cmd shell settings put system screen_off_timeout 2147483647 >/dev/null 2>&1 || true
   PHONE_TUNED=1
 }
@@ -193,12 +193,7 @@ run_once(){
   supports --window-borderless && args="$args --window-borderless"
   supports --disable-screensaver && args="$args --disable-screensaver"
   if [ "$STRETCH" = "1" ] && supports --render-fit; then args="$args --render-fit=stretched"; fi
-
-  # Alguns Android/ROMs deixam o stream preto quando o painel físico é desligado.
-  # Por padrão mantemos o display logicamente ligado e apenas reduzimos o brilho ao mínimo.
   if [ "$REAL_SCREEN_OFF" = "1" ] && supports --turn-screen-off; then args="$args --turn-screen-off"; fi
-  if supports --keep-active; then args="$args --keep-active"; elif [ "$TRANSPORT" = "usb" ] && supports --stay-awake; then args="$args --stay-awake"; fi
-
   case "$AUDIO_MODE" in off|0|false|no) supports --no-audio && args="$args --no-audio" ;; esac
   log "scrcpy $args"
   # shellcheck disable=SC2086
@@ -210,6 +205,8 @@ run_mirror(){
   command -v scrcpy >/dev/null 2>&1 || prepare
   command -v adb >/dev/null 2>&1 || prepare
   wait_phone
+  adb_cmd shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
+  adb_cmd shell wm dismiss-keyguard >/dev/null 2>&1 || true
   [ -x /usr/local/bin/orbis-audio ] && /usr/local/bin/orbis-audio --clean >>"$LOGFILE" 2>&1 || true
   start_graphics
   trap 'stop_graphics' EXIT INT TERM HUP
@@ -222,11 +219,11 @@ run_mirror(){
   say 'TV: fullscreen; Android sem rotação forçada.'
   [ "$STRETCH" = "1" ] && say 'CRT: preenchimento total quando render-fit=stretched estiver disponível.'
   if [ "$REAL_SCREEN_OFF" = "1" ]; then
-    say 'Celular: desligamento físico EXPERIMENTAL (pode gerar tela preta em algumas ROMs).'
+    say 'Celular: desligamento físico EXPERIMENTAL.'
   elif [ "$DIM_PHONE" = "1" ]; then
-    say 'Celular: display continua ativo para o stream, mas brilho fica no mínimo e não apaga sozinho.'
+    say 'Celular: brilho reduzido para 20; display continua ativo para o stream.'
   else
-    say 'Celular: tela mantida normalmente.'
+    say 'Celular: tela mantida normalmente para preservar o stream.'
   fi
   say 'Para sair: Ctrl+C.'
 
@@ -258,7 +255,8 @@ Uso:
   orbis-mirror                         espelha via USB
   orbis-mirror --wifi                  espelha via Wi-Fi já configurado
   orbis-mirror --wifi-setup            configura ADB Wi-Fi usando USB uma vez
-  orbis-mirror --screen-on             não reduz o brilho do celular
+  orbis-mirror --dim-screen            reduz o brilho do celular para 20
+  orbis-mirror --screen-on             mantém a tela física normal
   orbis-mirror --real-screen-off       tenta apagar fisicamente a tela (experimental)
   orbis-mirror --no-stretch            preserva a proporção original
   orbis-mirror --lite                  480px / 24 fps / 900 kbit
@@ -268,12 +266,12 @@ Uso:
   orbis-mirror --status                mostra conexões e recursos
 
 As opções podem ser combinadas, por exemplo:
-  orbis-mirror --wifi --screen-on
+  orbis-mirror --wifi --dim-screen
   orbis-mirror --wifi --no-stretch
 
-Por padrão o celular NÃO é desligado fisicamente, porque algumas ROMs entregam
-quadros pretos quando o painel apaga. O Orbis deixa brilho em 1 e aumenta o timeout,
-que visualmente quase apaga o telefone sem interromper o vídeo.
+Por padrão o Orbis NÃO mexe no brilho e NÃO apaga o painel do celular. Isso evita
+o stream preto observado neste aparelho. Depois que a imagem estiver estável,
+pode testar --dim-screen separadamente.
 EOF_HELP
 }
 
@@ -292,7 +290,7 @@ while [ "$#" -gt 0 ]; do
     --usb) TRANSPORT=usb ;;
     --screen-on) DIM_PHONE=0; REAL_SCREEN_OFF=0 ;;
     --real-screen-off) DIM_PHONE=0; REAL_SCREEN_OFF=1 ;;
-    --dim-screen) DIM_PHONE=1; REAL_SCREEN_OFF=0 ;;
+    --dim-screen|--dim-phone) DIM_PHONE=1; REAL_SCREEN_OFF=0 ;;
     --no-stretch) STRETCH=0 ;;
     --stretch) STRETCH=1 ;;
     --video-only) AUDIO_MODE=off ;;
