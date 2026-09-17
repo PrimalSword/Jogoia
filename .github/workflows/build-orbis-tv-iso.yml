@@ -1,0 +1,49 @@
+name: Build Orbis TV ISO
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'orbis-tv/**'
+      - 'ORBIS_TV_ACER.md'
+      - '.github/workflows/build-orbis-tv-iso.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install live-build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            live-build debootstrap xorriso isolinux syslinux-common syslinux-utils \
+            squashfs-tools dosfstools mtools ca-certificates
+
+      - name: Build Orbis TV
+        run: |
+          chmod +x orbis-tv/build-live.sh
+          sudo ./orbis-tv/build-live.sh
+
+      - name: Show generated files
+        run: ls -lh dist/orbistv-*
+
+      - name: Upload Orbis TV ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbisTV-0.1.0-amd64
+          path: |
+            dist/orbistv-0.1.0-amd64.iso
+            dist/orbistv-0.1.0-amd64.iso.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
