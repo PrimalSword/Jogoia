@@ -16,23 +16,28 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install live-build tools
+      - name: Build Orbis TV in Debian Trixie
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            live-build debootstrap xorriso isolinux syslinux-common syslinux-utils \
-            squashfs-tools dosfstools mtools ca-certificates
-
-      - name: Build Orbis TV
-        run: |
-          chmod +x orbis-tv/build-live.sh
-          sudo ./orbis-tv/build-live.sh
+          docker run --rm --privileged \
+            -v "$PWD:/work" \
+            -w /work \
+            debian:trixie \
+            bash -lc '
+              set -e
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                live-build debootstrap debian-archive-keyring xorriso isolinux \
+                syslinux-common syslinux-utils squashfs-tools dosfstools mtools \
+                ca-certificates
+              chmod +x orbis-tv/build-live.sh
+              ./orbis-tv/build-live.sh
+            '
 
       - name: Show generated files
         run: ls -lh dist/orbistv-*
