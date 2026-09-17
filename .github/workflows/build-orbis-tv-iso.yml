@@ -22,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Orbis TV in Debian Trixie
+      - name: Build Orbis TV 0.2 legacy image
         run: |
           docker run --rm --privileged \
             -v "$PWD:/work" \
@@ -39,16 +39,22 @@ jobs:
               ./orbis-tv/build-live.sh
             '
 
+      - name: Verify legacy boot image
+        run: |
+          ls -lh dist/orbistv-*
+          xorriso -indev dist/orbistv-0.2.0-amd64.iso -report_el_torito plain
+          xorriso -indev dist/orbistv-0.2.0-amd64.iso -report_system_area plain
+
       - name: Show generated files
         run: ls -lh dist/orbistv-*
 
       - name: Upload Orbis TV ISO
         uses: actions/upload-artifact@v4
         with:
-          name: OrbisTV-0.1.0-amd64
+          name: OrbisTV-0.2.0-legacy-amd64
           path: |
-            dist/orbistv-0.1.0-amd64.iso
-            dist/orbistv-0.1.0-amd64.iso.sha256
+            dist/orbistv-0.2.0-amd64.iso
+            dist/orbistv-0.2.0-amd64.iso.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
