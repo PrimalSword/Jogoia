@@ -26,12 +26,18 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
 cd "$BUILD_DIR"
 
+# O live-build empacotado no Ubuntu 24.04 ainda usa a nomenclatura antiga
+# "trixie/updates" para security.debian.org. Ela não existe no Debian 13.
+# Desativamos apenas esse repositório durante a geração da imagem; o sistema
+# continua vindo dos repositórios Trixie e Trixie Updates e pode receber o
+# repositório trixie-security normalmente quando instalado/atualizado depois.
 lb config noauto \
   --mode debian \
   --distribution trixie \
   --architectures amd64 \
   --binary-images iso-hybrid \
   --archive-areas "main contrib non-free non-free-firmware" \
+  --security false \
   --bootappend-live "boot=live components username=orbis hostname=orbistv locales=pt_BR.UTF-8 keyboard-layouts=br timezone=America/Sao_Paulo quiet" \
   --apt-recommends true \
   --memtest none \
@@ -279,7 +285,6 @@ cat > config/includes.chroot/etc/skel/.kodi/addons/plugin.program.orbis/addon.xm
 EOF
 
 cat > config/includes.chroot/etc/skel/.kodi/addons/plugin.program.orbis/default.py <<'EOF'
-import os
 import subprocess
 import sys
 import urllib.parse
@@ -342,7 +347,7 @@ chmod 0755 config/hooks/live/010-orbis-tv.hook.chroot
 
 lb build
 
-ISO="$(find . -maxdepth 1 -type f -name '*.hybrid.iso' -o -name '*.iso' | head -n1)"
+ISO="$(find . -maxdepth 1 -type f \( -name '*.hybrid.iso' -o -name '*.iso' \) | head -n1)"
 [ -n "$ISO" ] || { echo "ISO não encontrada após o build." >&2; exit 1; }
 
 cp "$ISO" "$OUT_DIR/${IMAGE_BASENAME}.iso"
