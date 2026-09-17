@@ -39,7 +39,7 @@ lb config noauto \
   --archive-areas "main contrib non-free non-free-firmware" \
   --security false \
   --bootappend-live "boot=live components username=orbis hostname=orbistv locales=pt_BR.UTF-8 keyboard-layouts=br timezone=America/Sao_Paulo quiet" \
-  --apt-recommends true \
+  --apt-recommends false \
   --memtest none \
   --iso-application "Orbis TV" \
   --iso-publisher "Jogoia / Orbis TV" \
