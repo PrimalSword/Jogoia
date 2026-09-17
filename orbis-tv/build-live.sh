@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${ORBIS_TV_VERSION:-0.1.0}"
+VERSION="${ORBIS_TV_VERSION:-0.2.0}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/.orbistv-build"
 OUT_DIR="$ROOT_DIR/dist"
@@ -26,16 +26,16 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
 cd "$BUILD_DIR"
 
-# O live-build empacotado no Ubuntu 24.04 ainda usa a nomenclatura antiga
-# "trixie/updates" para security.debian.org. Ela não existe no Debian 13.
-# Desativamos apenas esse repositório durante a geração da imagem; o sistema
-# continua vindo dos repositórios Trixie e Trixie Updates e pode receber o
-# repositório trixie-security normalmente quando instalado/atualizado depois.
+# v0.2: imagem deliberadamente conservadora para o Acer Z5WAH/LA-B161P.
+# Usamos Debian 12 (Bookworm) e SOMENTE SYSLINUX/ISOLINUX no boot.
+# Isso remove o GRUB/UEFI do caminho de inicialização, pois o firmware antigo
+# do Acer reiniciou ao tentar iniciar a v0.1 pelo pendrive, inclusive em modo DD.
 lb config noauto \
   --mode debian \
-  --distribution trixie \
+  --distribution bookworm \
   --architectures amd64 \
   --binary-images iso-hybrid \
+  --bootloaders syslinux \
   --archive-areas "main contrib non-free non-free-firmware" \
   --security false \
   --bootappend-live "boot=live components username=orbis hostname=orbistv locales=pt_BR.UTF-8 keyboard-layouts=br timezone=America/Sao_Paulo quiet" \
@@ -269,7 +269,7 @@ EOF
 
 cat > config/includes.chroot/etc/skel/.kodi/addons/plugin.program.orbis/addon.xml <<'EOF'
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.program.orbis" name="Orbis Apps" version="0.1.0" provider-name="Orbis TV">
+<addon id="plugin.program.orbis" name="Orbis Apps" version="0.2.0" provider-name="Orbis TV">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
   </requires>
