@@ -42,8 +42,13 @@ jobs:
       - name: Verify legacy boot image
         run: |
           ls -lh dist/orbistv-*
-          xorriso -indev dist/orbistv-0.2.0-amd64.iso -report_el_torito plain
-          xorriso -indev dist/orbistv-0.2.0-amd64.iso -report_system_area plain
+          docker run --rm             -v "$PWD:/work"             -w /work             debian:bookworm             bash -lc '
+              set -e
+              apt-get update >/dev/null
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xorriso >/dev/null
+              xorriso -indev dist/orbistv-0.2.0-amd64.iso -report_el_torito plain
+              xorriso -indev dist/orbistv-0.2.0-amd64.iso -report_system_area plain
+            '
 
       - name: Show generated files
         run: ls -lh dist/orbistv-*
