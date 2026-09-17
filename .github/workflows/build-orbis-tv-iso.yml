@@ -22,12 +22,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Orbis TV 0.2 legacy image
+      - name: Build Orbis TV 0.2 legacy image on Bookworm
         run: |
           docker run --rm --privileged \
             -v "$PWD:/work" \
             -w /work \
-            debian:trixie \
+            debian:bookworm \
             bash -lc '
               set -e
               apt-get update
