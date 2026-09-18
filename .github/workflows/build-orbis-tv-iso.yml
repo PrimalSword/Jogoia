@@ -42,14 +42,18 @@ jobs:
       - name: Verify BIOS and UEFI boot image
         run: |
           ls -lh dist/orbistv-*
-          docker run --rm             -v "$PWD:/work"             -w /work             debian:bookworm             bash -lc '
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            debian:bookworm \
+            bash -lc '
               set -e
               apt-get update >/dev/null
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xorriso >/dev/null
               xorriso -indev dist/orbistv-0.3.0-amd64.iso -report_el_torito plain | tee /tmp/el-torito.txt
               xorriso -indev dist/orbistv-0.3.0-amd64.iso -report_system_area plain | tee /tmp/system-area.txt
-              grep -qi 'BIOS' /tmp/el-torito.txt
-              grep -qi 'UEFI\|EFI' /tmp/el-torito.txt
+              grep -qi BIOS /tmp/el-torito.txt
+              grep -qi UEFI /tmp/el-torito.txt
             '
 
       - name: Show generated files
