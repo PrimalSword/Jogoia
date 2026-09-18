@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${ORBIS_TV_VERSION:-0.2.0}"
+VERSION="${ORBIS_TV_VERSION:-0.3.0}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/.orbistv-build"
 OUT_DIR="$ROOT_DIR/dist"
@@ -26,16 +26,18 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
 cd "$BUILD_DIR"
 
-# v0.2: imagem deliberadamente conservadora para o Acer Z5WAH/LA-B161P.
-# Usamos Debian 12 (Bookworm) e SOMENTE SYSLINUX/ISOLINUX no boot.
-# Isso remove o GRUB/UEFI do caminho de inicialização, pois o firmware antigo
-# do Acer reiniciou ao tentar iniciar a v0.1 pelo pendrive, inclusive em modo DD.
+# v0.3: imagem híbrida e conservadora para o Acer Z5WAH/LA-B161P.
+# A BIOS está protegida por senha e o F12 Boot Menu não está disponível, então
+# a imagem precisa iniciar no modo em que o firmware já estiver configurado.
+# Debian 12 (Bookworm) mantém uma pilha GRUB/EFI mais antiga que a v0.1/Trixie.
+# Incluímos Syslinux para BIOS legado e GRUB EFI + shim assinado para UEFI/Secure Boot.
 lb config noauto \
   --mode debian \
   --distribution bookworm \
   --architectures amd64 \
   --binary-images iso-hybrid \
-  --bootloaders syslinux \
+  --bootloaders "syslinux,grub-efi" \
+  --uefi-secure-boot enable \
   --archive-areas "main contrib non-free non-free-firmware" \
   --security false \
   --bootappend-live "boot=live components username=orbis hostname=orbistv locales=pt_BR.UTF-8 keyboard-layouts=br timezone=America/Sao_Paulo quiet" \
@@ -269,7 +271,7 @@ EOF
 
 cat > config/includes.chroot/etc/skel/.kodi/addons/plugin.program.orbis/addon.xml <<'EOF'
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.program.orbis" name="Orbis Apps" version="0.2.0" provider-name="Orbis TV">
+<addon id="plugin.program.orbis" name="Orbis Apps" version="0.3.0" provider-name="Orbis TV">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
   </requires>
