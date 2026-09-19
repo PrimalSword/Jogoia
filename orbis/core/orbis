@@ -13,6 +13,20 @@ if [ -f /etc/orbis-release ]; then
 fi
 SHORT_COMMIT="$(printf '%s' "$COMMIT" | cut -c1-8)"
 
+ensure_readable_console() {
+  command -v setfont >/dev/null 2>&1 || return 0
+  for font in \
+    /usr/share/consolefonts/ter-v32b.psf.gz \
+    /usr/share/consolefonts/ter-v32n.psf.gz \
+    /usr/share/kbd/consolefonts/ter-v32b.psf.gz \
+    /usr/share/kbd/consolefonts/ter-v32n.psf.gz
+  do
+    [ -r "$font" ] || continue
+    setfont "$font" >/dev/null 2>&1 && return 0
+  done
+  setfont ter-v32b >/dev/null 2>&1 || setfont ter-v32n >/dev/null 2>&1 || true
+}
+
 power_status() {
   BAT_DIR=""; AC_ONLINE=""
   for path in /sys/class/power_supply/BAT*; do [ -d "$path" ] && { BAT_DIR="$path"; break; }; done
@@ -50,14 +64,26 @@ repair_component() { name="$1"; source="$REPO_CORE/$name"; target="$BIN_DIR/$nam
 run_orbis_command() { name="$1"; command_path="$BIN_DIR/$name"; if [ ! -x "$command_path" ] || ! head -c 1 "$command_path" >/dev/null 2>&1; then printf 'Componente danificado ou ilegível: %s\nTentando autorreparo...\n' "$command_path"; repair_component "$name" || { printf 'Autorreparo indisponível para %s.\n' "$name"; return 1; }; fi; "$command_path" && return 0; code=$?; if [ "$code" -ge 126 ]; then printf 'Falha ao executar %s (código %s). Reparando e tentando novamente...\n' "$name" "$code"; repair_component "$name" && "$command_path"; return $?; fi; return "$code"; }
 pause_menu() { printf '\nPressione Enter para voltar...'; read -r _ || true; }
 
+ensure_readable_console
 show_status
 [ "${1:-}" = "--status" ] && exit 0
 while :; do
-  printf '%s\n' ' APLICATIVOS' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações' ' 13  Orbis Core / Painel Web' ' 14  Acesso remoto seguro'
+  printf '%s\n' ' APLICATIVOS' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações' ' 13  Orbis Core / Painel Web' ' 14  Acesso remoto seguro' ' 15  Orbis TV (CRT 640x480)'
   printf '%s\n' '' ' SISTEMA' '  5  Atualizar pelo Git' '  6  Ver logs' '  7  Instalar no cartão/disco' '  8  Atualizar painel' '  9  Reiniciar' ' 10  Desligar' ' 11  Sincronizar horário' '  0  Terminal'
   printf '\n%s' ' orbis › '; read -r choice || exit 0
   case "$choice" in
     1) run_orbis_command orbis-tetris; show_status ;; 2) run_orbis_command orbis-wifi; pause_menu; show_status ;; 3) run_orbis_command orbis-keyboard; pause_menu; show_status ;; 4) run_orbis_command orbis-doctor; pause_menu; show_status ;;
-    5) run_orbis_command orbis-update; pause_menu; show_status ;; 6) run_orbis_command orbis-log; show_status ;; 7) run_orbis_command orbis-install; pause_menu; show_status ;; 8) show_status ;; 9) reboot ;; 10) poweroff ;; 11) run_orbis_command orbis-time; pause_menu; show_status ;; 12) run_orbis_command orbis-jobs; show_status ;; 13) run_orbis_command orbis-web; show_status ;; 14) run_orbis_command orbis-remote; show_status ;; 0) exit 0 ;; *) printf 'Opção inválida.\n' ;;
+    5) run_orbis_command orbis-update; pause_menu; show_status ;; 6) run_orbis_command orbis-log; show_status ;; 7) run_orbis_command orbis-install; pause_menu; show_status ;; 8) show_status ;; 9) reboot ;; 10) poweroff ;; 11) run_orbis_command orbis-time; pause_menu; show_status ;; 12) run_orbis_command orbis-jobs; show_status ;; 13) run_orbis_command orbis-web; show_status ;; 14) run_orbis_command orbis-remote; show_status ;;
+    15)
+      if [ ! -x "$BIN_DIR/orbis-tv" ]; then
+        printf '%s\n' 'Modo TV ainda não está instalado. Rode a opção 5 uma vez e tente novamente.'
+        pause_menu
+        show_status
+      else
+        ORBIS_TV_MODE=640x480 "$BIN_DIR/orbis-tv" --prepare || { pause_menu; show_status; continue; }
+        ORBIS_TV_MODE=640x480 "$BIN_DIR/orbis-tv" || true
+        show_status
+      fi ;;
+    0) exit 0 ;; *) printf 'Opção inválida.\n' ;;
   esac
 done
