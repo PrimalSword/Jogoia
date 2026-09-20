@@ -68,7 +68,7 @@ ensure_readable_console
 show_status
 [ "${1:-}" = "--status" ] && exit 0
 while :; do
-  printf '%s\n' ' APLICATIVOS' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações' ' 13  Orbis Core / Painel Web' ' 14  Acesso remoto seguro' ' 15  Orbis TV (CRT 640x480)'
+  printf '%s\n' ' APLICATIVOS' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações' ' 13  Orbis Core / Painel Web' ' 14  Acesso remoto seguro' ' 15  Orbis TV (CRT 640x480)' ' 16  Controle da TV pelo celular'
   printf '%s\n' '' ' SISTEMA' '  5  Atualizar pelo Git' '  6  Ver logs' '  7  Instalar no cartão/disco' '  8  Atualizar painel' '  9  Reiniciar' ' 10  Desligar' ' 11  Sincronizar horário' '  0  Terminal'
   printf '\n%s' ' orbis › '; read -r choice || exit 0
   case "$choice" in
@@ -84,6 +84,14 @@ while :; do
         ORBIS_TV_MODE=640x480 "$BIN_DIR/orbis-tv" || true
         show_status
       fi ;;
+    16)
+      if [ -x "$BIN_DIR/orbis-tv-remote" ]; then
+        "$BIN_DIR/orbis-tv-remote" --start || true
+      else
+        printf '%s\n' 'Controle celular ainda não instalado. Rode a opção 5.'
+      fi
+      pause_menu
+      show_status ;;
     0) exit 0 ;; *) printf 'Opção inválida.\n' ;;
   esac
 done
