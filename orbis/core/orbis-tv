@@ -5,6 +5,8 @@ REPOS="/etc/apk/repositories"
 STATE_DIR="/var/lib/orbis-tv"
 PROFILE_DIR="$STATE_DIR/firefox"
 LAST_URL="$STATE_DIR/last-url"
+AUTOSTART_FILE="/etc/orbis-tv-autostart"
+ITTV_URL="https://tv.ittv.com.br/auth/login?redirect=%2F"
 LOGFILE="/var/log/orbis-tv.log"
 DEFAULT_MODE="${ORBIS_TV_MODE:-800x600}"
 DISPLAY_NUM="${ORBIS_TV_DISPLAY:-:0}"
@@ -424,6 +426,30 @@ run_tv() {
   [ "$code" -eq 0 ] || { say "Firefox encerrou com código $code. Veja $LOGFILE"; return "$code"; }
   say 'Modo TV encerrado. Voltando ao terminal.'
 }
+enable_ittv_autostart() {
+  need_root
+  cat > "$AUTOSTART_FILE" <<EOF
+ORBIS_TV_AUTOSTART=1
+ORBIS_TV_URL='$ITTV_URL'
+EOF
+  chmod 0600 "$AUTOSTART_FILE" 2>/dev/null || true
+  say 'Início automático ativado: Orbis TV abrirá a ITTV em 640x480 no próximo boot.'
+  say 'O perfil do Firefox é persistente; após o primeiro login, a sessão será reutilizada enquanto a ITTV mantiver o cookie válido.'
+}
+disable_autostart() {
+  need_root
+  rm -f "$AUTOSTART_FILE"
+  say 'Início automático do Orbis TV desativado.'
+}
+autostart_status() {
+  if [ -r "$AUTOSTART_FILE" ]; then
+    . "$AUTOSTART_FILE" 2>/dev/null || true
+    say "Início automático: ${ORBIS_TV_AUTOSTART:-0}"
+    say "URL: ${ORBIS_TV_URL:-não definida}"
+  else
+    say 'Início automático: desativado'
+  fi
+}
 status() {
   say 'ORBIS TV  •  STATUS'
   if runtime_ready; then say 'Runtime gráfico: instalado'; else say 'Runtime gráfico: incompleto'; fi
@@ -446,6 +472,7 @@ status() {
   done
   if command -v firefox-esr >/dev/null 2>&1; then firefox-esr --version 2>/dev/null || true; elif command -v firefox >/dev/null 2>&1; then firefox --version 2>/dev/null || true; fi
   [ -r "$LAST_URL" ] && printf 'Último site: %s\n' "$(cat "$LAST_URL")" || true
+  autostart_status
   printf 'Modo preferido: %s\n' "$DEFAULT_MODE"
   [ -s "$LOGFILE" ] && { say 'Últimas linhas do log:'; tail -n 20 "$LOGFILE"; }
 }
@@ -456,6 +483,8 @@ Uso:
   orbis-tv exemplo.com      abre o site informado
   orbis-tv --prepare        instala/repara vídeo, entrada, AdBlock e áudio
   orbis-tv --status         mostra diagnóstico
+  orbis-tv --autostart-ittv ativa boot direto na ITTV
+  orbis-tv --autostart-off  desativa boot automático
 
 Modo TV:
   por padrão, quando existe VGA/HDMI externo, a tela interna é desligada.
@@ -483,6 +512,9 @@ EOF
 case "${1:-}" in
   --prepare|prepare|install|--install) prepare ;;
   --status|status) status ;;
+  --autostart-ittv|autostart-ittv) enable_ittv_autostart ;;
+  --autostart-off|autostart-off) disable_autostart ;;
+  --autostart-status|autostart-status) autostart_status ;;
   --help|-h|help) help ;;
   *) run_tv "${1:-}" ;;
 esac
