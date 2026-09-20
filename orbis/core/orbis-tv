@@ -12,7 +12,7 @@ EXTERNAL_ONLY="${ORBIS_TV_EXTERNAL_ONLY:-1}"
 UBLOCK_ID="uBlock0@raymondhill.net"
 UBLOCK_URL="https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
 
-TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr xinput mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev eudev eudev-openrc alpine-conf"
+TV_PACKAGES="xorg-server openbox firefox-esr dbus dbus-x11 xrandr xinput xdotool xclip alsa-utils mesa-dri-gallium mesa-gl font-dejavu xf86-input-libinput xf86-input-evdev xf86-input-synaptics xf86-video-intel xf86-video-vesa xf86-video-fbdev eudev eudev-openrc alpine-conf"
 
 say() { printf '%s\n' "$*"; }
 need_root() {
@@ -106,6 +106,15 @@ ensure_audio_clean() {
   if [ -x /usr/local/bin/orbis-audio ]; then
     /usr/local/bin/orbis-audio --clean >>"$LOGFILE" 2>&1 || true
   fi
+}
+ensure_phone_remote() {
+  if [ -x /usr/local/bin/orbis-tv-remote ]; then
+    ORBIS_TV_DISPLAY="$DISPLAY_NUM" /usr/local/bin/orbis-tv-remote --start || true
+  fi
+}
+phone_remote_ready() {
+  [ -x /usr/local/bin/orbis-tv-remote ] || return 1
+  /usr/local/bin/orbis-tv-remote --status 2>/dev/null | grep -q 'ATIVO'
 }
 ensure_video_stack() {
   ensure_repositories
@@ -253,7 +262,8 @@ prepare() {
   ensure_input_stack
   ensure_audio_clean
   enable_performance_mode
-  say 'Modo TV preparado; vídeo, entrada, bloqueador e perfil anti-BZZ verificados.'
+  ensure_phone_remote
+  say 'Modo TV preparado; vídeo, entrada, controle pelo celular, bloqueador e perfil anti-BZZ verificados.'
 }
 normalize_url() {
   case "$1" in
@@ -330,6 +340,12 @@ validate_input() {
     return 0
   fi
 
+  if phone_remote_ready; then
+    say 'Entrada física incompleta, mas o controle pelo celular está ativo.'
+    say 'O modo TV continuará; use o celular como mouse/teclado.'
+    return 0
+  fi
+
   say 'SEGURANÇA: o Xorg abriu, mas não reconheceu todos os dispositivos de entrada.'
   say "Teclado: $([ "$keyboard" -eq 1 ] && printf OK || printf AUSENTE)"
   say "Mouse/touchpad: $([ "$pointer" -eq 1 ] && printf OK || printf AUSENTE)"
@@ -369,6 +385,7 @@ run_tv() {
   command -v chvt >/dev/null 2>&1 && chvt 1 2>/dev/null || true
   start_xorg
   configure_display
+  ensure_phone_remote
   if ! validate_input; then
     stop_xorg
     trap - EXIT INT TERM HUP
@@ -405,6 +422,11 @@ status() {
   printf 'psmouse: '; lsmod 2>/dev/null | grep -q '^psmouse' && say 'carregado' || say 'não carregado'
   printf 'zram: '; grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null && say 'ativa' || say 'inativa/indisponível'
   printf 'saída externa exclusiva: %s\n' "$EXTERNAL_ONLY"
+  if [ -x /usr/local/bin/orbis-tv-remote ]; then
+    /usr/local/bin/orbis-tv-remote --status 2>/dev/null || true
+  else
+    say 'Controle pelo celular: ainda não instalado'
+  fi
   for pkg in xf86-video-intel xf86-video-vesa xf86-video-fbdev xf86-input-libinput xf86-input-evdev xf86-input-synaptics xinput; do
     apk info -e "$pkg" >/dev/null 2>&1 && printf '%s: instalado\n' "$pkg" || printf '%s: ausente\n' "$pkg"
   done
