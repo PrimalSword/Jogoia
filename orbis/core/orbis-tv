@@ -107,6 +107,18 @@ ensure_audio_clean() {
     /usr/local/bin/orbis-audio --clean >>"$LOGFILE" 2>&1 || true
   fi
 }
+ensure_remote_stack() {
+  ensure_repositories
+  missing=""
+  for pkg in xdotool xclip alsa-utils; do
+    apk info -e "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+  done
+  if [ -n "$missing" ]; then
+    say "Instalando controle pelo celular:$missing"
+    apk update
+    apk add --force-broken-world $missing
+  fi
+}
 ensure_phone_remote() {
   if [ -x /usr/local/bin/orbis-tv-remote ]; then
     ORBIS_TV_DISPLAY="$DISPLAY_NUM" /usr/local/bin/orbis-tv-remote --start || true
@@ -256,6 +268,8 @@ prepare() {
     apk update
     apk add --force-broken-world $TV_PACKAGES
   fi
+  ensure_remote_stack
+  ensure_remote_stack
   write_firefox_profile
   ensure_adblock
   ensure_video_stack
