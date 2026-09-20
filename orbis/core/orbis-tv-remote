@@ -9,6 +9,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote_plus
 
 PORT = int(os.environ.get("ORBIS_TV_REMOTE_PORT", "8081"))
 DISPLAY = os.environ.get("ORBIS_TV_DISPLAY", ":0")
@@ -84,6 +85,18 @@ input{width:100%;font-size:16px}.hidden{display:none!important}
       </div>
     </div>
 
+    <div class="card">
+      <h2>Navegar na TV</h2>
+      <div class="row">
+        <input id="nav" placeholder="Pesquise ou digite um site" autocomplete="off" enterkeyhint="go">
+        <button class="primary" id="go">Abrir</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="ittv">ITTV</button>
+        <button id="browser">Navegador</button>
+      </div>
+    </div>
+
     <div class="card vol">
       <h2>Volume</h2>
       <div class="row">
@@ -96,6 +109,9 @@ input{width:100%;font-size:16px}.hidden{display:none!important}
     <div class="card">
       <div class="row">
         <button data-key="XF86AudioPlay">▶︎ / ❚❚</button>
+        <button id="poweroff">Desligar TV/PC</button>
+      </div>
+      <div class="row" style="margin-top:10px">
         <button id="disconnect">Desconectar celular</button>
       </div>
       <div id="status"></div>
@@ -142,6 +158,17 @@ input{width:100%;font-size:16px}.hidden{display:none!important}
   document.querySelectorAll('[data-key]').forEach(b => b.addEventListener('click', async () => {
     try { await api({action:'key', key:b.dataset.key}); } catch(e){ $('#status').textContent=e.message; }
   }));
+
+  async function navigate(value){
+    const q=(value||'').trim();
+    if(!q) return;
+    try { await api({action:'navigate', value:q}); $('#status').textContent='Abrindo na TV…'; }
+    catch(e){ $('#status').textContent=e.message; }
+  }
+  $('#go').addEventListener('click',()=>navigate($('#nav').value));
+  $('#nav').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); navigate($('#nav').value); }});
+  $('#ittv').addEventListener('click',()=>navigate('https://tv.ittv.com.br/auth/login?redirect=%2F'));
+  $('#browser').addEventListener('click',()=>navigate('https://www.google.com/'));
 
   $('#sendText').addEventListener('click', async () => {
     const text = $('#text').value;
@@ -207,6 +234,12 @@ input{width:100%;font-size:16px}.hidden{display:none!important}
     }
   });
 
+  $('#poweroff').addEventListener('click', async ()=>{
+    if(!confirm('Desligar completamente o Orbis TV?')) return;
+    try { await api({action:'poweroff'}); $('#status').textContent='Desligando…'; }
+    catch(e){ $('#status').textContent=e.message; }
+  });
+
   $('#disconnect').addEventListener('click',()=>{
     localStorage.removeItem('orbisPin'); pin=''; location.reload();
   });
@@ -243,6 +276,26 @@ def run(cmd, stdin_text=None):
 
 def xdotool(*args):
     return run(["xdotool", *args])
+
+def normalize_navigation(value):
+    value=(value or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://","https://","file://")):
+        return value[:1200]
+    if " " not in value and "." in value:
+        return ("https://" + value)[:1200]
+    return "https://www.google.com/search?q=" + quote_plus(value[:500])
+
+def navigate(url):
+    if not url:
+        return False
+    # Firefox em modo kiosk ainda recebe Ctrl+L; xclip evita problemas com acentos/URLs.
+    if shutil_which("xclip"):
+        if not run(["xclip","-selection","clipboard"], url):
+            return False
+        return xdotool("key","--clearmodifiers","ctrl+l") and xdotool("key","--clearmodifiers","ctrl+v") and xdotool("key","Return")
+    return xdotool("key","--clearmodifiers","ctrl+l") and xdotool("type","--clearmodifiers","--delay","1","--",url) and xdotool("key","Return")
 
 def change_volume(direction):
     controls = ["Master", "Headphone", "PCM", "Front"]
@@ -293,6 +346,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self.send_json(400,{"ok":False,"error":"Pedido inválido"}); return
         if str(body.get("pin","")) != self.server.pin:
+            time.sleep(0.35)
             self.send_json(403,{"ok":False,"error":"PIN incorreto"}); return
 
         action=body.get("action","")
@@ -325,12 +379,18 @@ class Handler(BaseHTTPRequestHandler):
                     ok=run(["xclip","-selection","clipboard"],text) and xdotool("key","--clearmodifiers","ctrl+v")
                 else:
                     ok=xdotool("type","--clearmodifiers","--delay","1","--",text)
+            elif action=="navigate":
+                ok=navigate(normalize_navigation(str(body.get("value",""))))
             elif action=="volume_up":
                 ok=change_volume("up")
             elif action=="volume_down":
                 ok=change_volume("down")
             elif action=="mute":
                 ok=change_volume("mute")
+            elif action=="poweroff":
+                self.send_json(200,{"ok":True,"error":None})
+                subprocess.Popen(["poweroff"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
         except Exception:
             ok=False
         self.send_json(200 if ok else 500,{"ok":ok,"error":None if ok else "Comando não executado"})
