@@ -86,6 +86,7 @@ while :; do
       fi ;;
     16)
       if [ -x "$BIN_DIR/orbis-tv-remote" ]; then
+        [ -x "$BIN_DIR/orbis-tv" ] && ORBIS_TV_MODE=640x480 "$BIN_DIR/orbis-tv" --prepare >/dev/null 2>&1 || true
         "$BIN_DIR/orbis-tv-remote" --start || true
       else
         printf '%s\n' 'Controle celular ainda não instalado. Rode a opção 5.'
