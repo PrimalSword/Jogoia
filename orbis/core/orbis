@@ -68,7 +68,7 @@ ensure_readable_console
 show_status
 [ "${1:-}" = "--status" ] && exit 0
 while :; do
-  printf '%s\n' ' APLICATIVOS' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações' ' 13  Orbis Core / Painel Web' ' 14  Acesso remoto seguro' ' 15  Orbis TV (CRT 640x480)' ' 16  Controle da TV pelo celular'
+  printf '%s\n' ' APLICATIVOS' '  1  Tetris' '  2  Configurar Wi-Fi' '  3  Configurar teclado' '  4  Orbis Doctor' ' 12  Automações' ' 13  Orbis Core / Painel Web' ' 14  Acesso remoto seguro' ' 15  Orbis TV (CRT 640x480)' ' 16  Controle da TV pelo celular' ' 17  Ligar direto na ITTV' ' 18  Desativar início automático'
   printf '%s\n' '' ' SISTEMA' '  5  Atualizar pelo Git' '  6  Ver logs' '  7  Instalar no cartão/disco' '  8  Atualizar painel' '  9  Reiniciar' ' 10  Desligar' ' 11  Sincronizar horário' '  0  Terminal'
   printf '\n%s' ' orbis › '; read -r choice || exit 0
   case "$choice" in
@@ -90,6 +90,21 @@ while :; do
         "$BIN_DIR/orbis-tv-remote" --start || true
       else
         printf '%s\n' 'Controle celular ainda não instalado. Rode a opção 5.'
+      fi
+      pause_menu
+      show_status ;;
+    17)
+      if [ -x "$BIN_DIR/orbis-tv" ]; then
+        ORBIS_TV_MODE=640x480 "$BIN_DIR/orbis-tv" --prepare || true
+        "$BIN_DIR/orbis-tv" --autostart-ittv || true
+      else
+        printf '%s\n' 'Orbis TV ainda não instalado. Rode a opção 5.'
+      fi
+      pause_menu
+      show_status ;;
+    18)
+      if [ -x "$BIN_DIR/orbis-tv" ]; then
+        "$BIN_DIR/orbis-tv" --autostart-off || true
       fi
       pause_menu
       show_status ;;
