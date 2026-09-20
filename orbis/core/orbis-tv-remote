@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+import json
+import os
+import secrets
+import signal
+import socket
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+PORT = int(os.environ.get("ORBIS_TV_REMOTE_PORT", "8081"))
+DISPLAY = os.environ.get("ORBIS_TV_DISPLAY", ":0")
+STATE_DIR = Path("/var/lib/orbis-tv-remote")
+PIN_FILE = STATE_DIR / "pin"
+PID_FILE = Path("/run/orbis-tv-remote.pid")
+LOG_FILE = Path("/var/log/orbis-tv-remote.log")
+
+ALLOWED_KEYS = {
+    "Return", "Escape", "BackSpace", "Tab", "Up", "Down", "Left", "Right",
+    "space", "Home", "End", "Page_Up", "Page_Down",
+    "XF86AudioPlay", "XF86AudioPause", "XF86AudioStop",
+}
+
+HTML = r'''<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Orbis TV Remote</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:#101114;color:#f5f7fa}
+main{max-width:680px;margin:auto;padding:16px}.card{background:#191b20;border:1px solid #2b2e35;border-radius:18px;padding:14px;margin-bottom:14px}
+h1{font-size:22px;margin:0 0 6px}h2{font-size:16px;margin:0 0 10px;color:#cfd4dc}
+small,.muted{color:#9ba3af}.row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1}
+button,input{font:inherit;border-radius:14px;border:1px solid #343842;background:#242832;color:#fff;min-height:48px;padding:10px 12px}
+button{font-weight:700}button:active{transform:scale(.98)}button.primary{background:#e85d04;border-color:#e85d04}
+button.on{background:#1f7a4d;border-color:#1f7a4d}
+input{width:100%;font-size:16px}.hidden{display:none!important}
+#pad{height:280px;border-radius:20px;background:linear-gradient(145deg,#20242b,#15171b);border:1px solid #343842;touch-action:none;position:relative;overflow:hidden}
+#pad:after{content:"TOQUE PARA MOVER • TOQUE RÁPIDO = CLIQUE";position:absolute;inset:auto 10px 14px;text-align:center;color:#7d8794;font-size:12px;pointer-events:none}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.grid button{min-width:0}
+#status{min-height:22px;margin-top:8px;color:#aeb7c4}.vol button{font-size:20px}
+</style>
+<main>
+  <div class="card" id="pairCard">
+    <h1>Orbis TV Remote</h1>
+    <div class="muted">Digite o PIN mostrado no Orbis.</div>
+    <div class="row" style="margin-top:10px">
+      <input id="pin" inputmode="numeric" maxlength="6" placeholder="PIN de 6 dígitos" autocomplete="one-time-code">
+      <button class="primary" id="pair">Conectar</button>
+    </div>
+    <div id="pairStatus"></div>
+  </div>
+
+  <div id="controls" class="hidden">
+    <div class="card">
+      <h2>Mouse</h2>
+      <div id="pad"></div>
+      <div class="row" style="margin-top:10px">
+        <button data-action="click">Clique</button>
+        <button data-action="right_click">Botão direito</button>
+        <button data-action="double_click">Duplo clique</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="gyro">Ativar giroscópio</button>
+        <button data-action="scroll_up">Rolar ↑</button>
+        <button data-action="scroll_down">Rolar ↓</button>
+      </div>
+      <div id="gyroStatus" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Teclado</h2>
+      <div class="row">
+        <input id="text" placeholder="Digite aqui e envie para a TV" autocomplete="off">
+        <button class="primary" id="sendText">Enviar</button>
+      </div>
+      <div class="grid" style="margin-top:10px">
+        <button data-key="Left">←</button><button data-key="Up">↑</button><button data-key="Right">→</button>
+        <button data-key="Escape">Esc</button><button data-key="Down">↓</button><button data-key="Return">Enter</button>
+        <button data-key="BackSpace">⌫</button><button data-key="space">Espaço</button><button data-key="Tab">Tab</button>
+      </div>
+    </div>
+
+    <div class="card vol">
+      <h2>Volume</h2>
+      <div class="row">
+        <button data-action="volume_down">🔉 −</button>
+        <button data-action="mute">🔇</button>
+        <button data-action="volume_up">🔊 +</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button data-key="XF86AudioPlay">▶︎ / ❚❚</button>
+        <button id="disconnect">Desconectar celular</button>
+      </div>
+      <div id="status"></div>
+    </div>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  let pin = localStorage.getItem('orbisPin') || '';
+  let gyroOn = false, lastGamma = null, lastBeta = null, lastGyroSent = 0;
+
+  async function api(payload) {
+    payload.pin = pin;
+    const r = await fetch('/api/action', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+    const j = await r.json().catch(()=>({ok:false,error:'Resposta inválida'}));
+    if (!r.ok || !j.ok) throw new Error(j.error || 'Falha');
+    return j;
+  }
+
+  async function pair() {
+    pin = $('#pin').value.trim();
+    try {
+      await api({action:'ping'});
+      localStorage.setItem('orbisPin', pin);
+      $('#pairCard').classList.add('hidden');
+      $('#controls').classList.remove('hidden');
+      $('#status').textContent='Conectado à Orbis TV';
+    } catch(e) {
+      $('#pairStatus').textContent='PIN incorreto ou Orbis indisponível.';
+    }
+  }
+
+  $('#pair').addEventListener('click', pair);
+  $('#pin').addEventListener('keydown', e => { if(e.key==='Enter') pair(); });
+  if(pin){ $('#pin').value=pin; pair(); }
+
+  document.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', async () => {
+    try { await api({action:b.dataset.action}); } catch(e){ $('#status').textContent=e.message; }
+  }));
+  document.querySelectorAll('[data-key]').forEach(b => b.addEventListener('click', async () => {
+    try { await api({action:'key', key:b.dataset.key}); } catch(e){ $('#status').textContent=e.message; }
+  }));
+
+  $('#sendText').addEventListener('click', async () => {
+    const text = $('#text').value;
+    if(!text) return;
+    try { await api({action:'text', text}); $('#text').value=''; } catch(e){ $('#status').textContent=e.message; }
+  });
+  $('#text').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); $('#sendText').click(); } });
+
+  const pad = $('#pad');
+  let down=false, px=0, py=0, moved=0, started=0, lastSend=0, pendingX=0, pendingY=0;
+  pad.addEventListener('pointerdown', e => {
+    down=true; px=e.clientX; py=e.clientY; moved=0; started=performance.now();
+    pad.setPointerCapture(e.pointerId);
+  });
+  pad.addEventListener('pointermove', e => {
+    if(!down) return;
+    const dx=e.clientX-px, dy=e.clientY-py; px=e.clientX; py=e.clientY;
+    moved += Math.abs(dx)+Math.abs(dy);
+    pendingX += dx*1.7; pendingY += dy*1.7;
+    const now=performance.now();
+    if(now-lastSend>28 && (Math.abs(pendingX)>0.5 || Math.abs(pendingY)>0.5)){
+      api({action:'move',dx:Math.round(pendingX),dy:Math.round(pendingY)}).catch(()=>{});
+      pendingX=pendingY=0; lastSend=now;
+    }
+  });
+  pad.addEventListener('pointerup', () => {
+    down=false;
+    if(moved<10 && performance.now()-started<350) api({action:'click'}).catch(()=>{});
+  });
+  pad.addEventListener('pointercancel', ()=>{down=false;});
+
+  async function orientationHandler(e){
+    if(!gyroOn || e.gamma==null || e.beta==null) return;
+    if(lastGamma===null){ lastGamma=e.gamma; lastBeta=e.beta; return; }
+    const dg=e.gamma-lastGamma, db=e.beta-lastBeta;
+    lastGamma=e.gamma; lastBeta=e.beta;
+    const now=performance.now();
+    if(now-lastGyroSent<35) return;
+    lastGyroSent=now;
+    const dx=Math.max(-45,Math.min(45,Math.round(dg*3.8)));
+    const dy=Math.max(-45,Math.min(45,Math.round(db*3.2)));
+    if(Math.abs(dx)+Math.abs(dy)>1) api({action:'move',dx,dy}).catch(()=>{});
+  }
+
+  $('#gyro').addEventListener('click', async () => {
+    if(gyroOn){
+      gyroOn=false; window.removeEventListener('deviceorientation',orientationHandler);
+      $('#gyro').classList.remove('on'); $('#gyro').textContent='Ativar giroscópio';
+      $('#gyroStatus').textContent=''; lastGamma=lastBeta=null; return;
+    }
+    try{
+      if(typeof DeviceOrientationEvent==='undefined') throw new Error('Este navegador não oferece giroscópio.');
+      if(typeof DeviceOrientationEvent.requestPermission==='function'){
+        const p=await DeviceOrientationEvent.requestPermission();
+        if(p!=='granted') throw new Error('Permissão do giroscópio negada.');
+      }
+      gyroOn=true; lastGamma=lastBeta=null;
+      window.addEventListener('deviceorientation',orientationHandler);
+      $('#gyro').classList.add('on'); $('#gyro').textContent='Desativar giroscópio';
+      $('#gyroStatus').textContent='Movimente o celular como um controle aéreo.';
+    }catch(e){
+      $('#gyroStatus').textContent=e.message + ' Em alguns celulares o sensor exige HTTPS; o touchpad continua funcionando.';
+    }
+  });
+
+  $('#disconnect').addEventListener('click',()=>{
+    localStorage.removeItem('orbisPin'); pin=''; location.reload();
+  });
+})();
+</script>
+</html>'''
+
+def ensure_state():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)
+    if not PIN_FILE.exists():
+        PIN_FILE.write_text(f"{secrets.randbelow(1000000):06d}\n")
+        os.chmod(PIN_FILE, 0o600)
+    return PIN_FILE.read_text().strip()
+
+def get_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("1.1.1.1", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
+
+def run(cmd, stdin_text=None):
+    env = os.environ.copy()
+    env["DISPLAY"] = DISPLAY
+    return subprocess.run(
+        cmd, input=stdin_text, text=True, env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        timeout=4, check=False
+    ).returncode == 0
+
+def xdotool(*args):
+    return run(["xdotool", *args])
+
+def change_volume(direction):
+    controls = ["Master", "Headphone", "PCM", "Front"]
+    for ctl in controls:
+        if direction == "up":
+            if run(["amixer","-q","sset",ctl,"5%+","unmute"]): return True
+        elif direction == "down":
+            if run(["amixer","-q","sset",ctl,"5%-","unmute"]): return True
+        elif direction == "mute":
+            if run(["amixer","-q","sset",ctl,"toggle"]): return True
+    return False
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "OrbisTVRemote/1.0"
+    def log_message(self, fmt, *args):
+        return
+
+    def send_json(self, code, payload):
+        data = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type","application/json; charset=utf-8")
+        self.send_header("Content-Length",str(len(data)))
+        self.send_header("Cache-Control","no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path in ("/","/index.html"):
+            data=HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type","text/html; charset=utf-8")
+            self.send_header("Content-Length",str(len(data)))
+            self.send_header("Cache-Control","no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        elif self.path == "/health":
+            self.send_json(200,{"ok":True})
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        if self.path != "/api/action":
+            self.send_error(404); return
+        try:
+            n=int(self.headers.get("Content-Length","0"))
+            if n <= 0 or n > 16384: raise ValueError()
+            body=json.loads(self.rfile.read(n))
+        except Exception:
+            self.send_json(400,{"ok":False,"error":"Pedido inválido"}); return
+        if str(body.get("pin","")) != self.server.pin:
+            self.send_json(403,{"ok":False,"error":"PIN incorreto"}); return
+
+        action=body.get("action","")
+        ok=False
+        try:
+            if action=="ping":
+                ok=True
+            elif action=="move":
+                dx=max(-250,min(250,int(body.get("dx",0))))
+                dy=max(-250,min(250,int(body.get("dy",0))))
+                ok=xdotool("mousemove_relative","--",str(dx),str(dy))
+            elif action=="click":
+                ok=xdotool("click","1")
+            elif action=="double_click":
+                ok=xdotool("click","--repeat","2","--delay","90","1")
+            elif action=="right_click":
+                ok=xdotool("click","3")
+            elif action=="scroll_up":
+                ok=xdotool("click","--repeat","3","4")
+            elif action=="scroll_down":
+                ok=xdotool("click","--repeat","3","5")
+            elif action=="key":
+                key=str(body.get("key",""))
+                ok=key in ALLOWED_KEYS and xdotool("key","--clearmodifiers",key)
+            elif action=="text":
+                text=str(body.get("text",""))[:500]
+                if not text:
+                    ok=True
+                elif shutil_which("xclip"):
+                    ok=run(["xclip","-selection","clipboard"],text) and xdotool("key","--clearmodifiers","ctrl+v")
+                else:
+                    ok=xdotool("type","--clearmodifiers","--delay","1","--",text)
+            elif action=="volume_up":
+                ok=change_volume("up")
+            elif action=="volume_down":
+                ok=change_volume("down")
+            elif action=="mute":
+                ok=change_volume("mute")
+        except Exception:
+            ok=False
+        self.send_json(200 if ok else 500,{"ok":ok,"error":None if ok else "Comando não executado"})
+
+def shutil_which(name):
+    for d in os.environ.get("PATH","").split(os.pathsep):
+        p=os.path.join(d,name)
+        if os.path.isfile(p) and os.access(p,os.X_OK):
+            return p
+    return None
+
+def pid_alive():
+    try:
+        pid=int(PID_FILE.read_text().strip())
+        os.kill(pid,0)
+        return pid
+    except Exception:
+        return None
+
+def start():
+    ensure_state()
+    pid=pid_alive()
+    if pid:
+        print_status()
+        return
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    log=open(LOG_FILE,"ab",buffering=0)
+    p=subprocess.Popen([sys.executable,os.path.abspath(__file__),"--serve"],
+                       stdin=subprocess.DEVNULL,stdout=log,stderr=log,
+                       start_new_session=True,env={**os.environ,"DISPLAY":DISPLAY})
+    PID_FILE.write_text(str(p.pid)+"\n")
+    time.sleep(0.5)
+    if p.poll() is not None:
+        print("Falha ao iniciar controle remoto. Veja", LOG_FILE)
+        raise SystemExit(1)
+    print_status()
+
+def stop():
+    pid=pid_alive()
+    if pid:
+        try: os.kill(pid,signal.SIGTERM)
+        except OSError: pass
+        time.sleep(0.3)
+    try: PID_FILE.unlink()
+    except FileNotFoundError: pass
+    print("Controle remoto parado.")
+
+def print_status():
+    pin=ensure_state()
+    state="ATIVO" if pid_alive() else "INATIVO"
+    print("ORBIS TV REMOTE •",state)
+    print(f"Abra no celular: http://{get_ip()}:{PORT}")
+    print("PIN:",pin)
+    print("Touchpad, teclado e volume: disponíveis.")
+    print("Giroscópio: disponível quando o navegador do celular permitir o sensor.")
+
+def serve():
+    pin=ensure_state()
+    server=ThreadingHTTPServer(("0.0.0.0",PORT),Handler)
+    server.pin=pin
+    def end(*_):
+        server.shutdown()
+    signal.signal(signal.SIGTERM,end)
+    signal.signal(signal.SIGINT,end)
+    try: server.serve_forever()
+    finally:
+        server.server_close()
+
+if __name__=="__main__":
+    arg=sys.argv[1] if len(sys.argv)>1 else "--status"
+    if arg in ("--start","start","--boot","boot"): start()
+    elif arg in ("--stop","stop"): stop()
+    elif arg in ("--restart","restart"): stop(); start()
+    elif arg in ("--serve","serve"): serve()
+    else: print_status()
