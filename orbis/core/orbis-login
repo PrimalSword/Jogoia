@@ -24,6 +24,19 @@ sync_clock() { [ -x /usr/local/bin/orbis-time ] && /usr/local/bin/orbis-time --q
 run_boot_automations() { [ -x /usr/local/bin/orbis-jobs ] && /usr/local/bin/orbis-jobs --boot >/dev/null 2>&1 || true; }
 start_web_dashboard() { [ -x /usr/local/bin/orbis-web ] && /usr/local/bin/orbis-web --boot >/dev/null 2>&1 || true; }
 start_remote_access() { [ -x /usr/local/bin/orbis-remote ] && /usr/local/bin/orbis-remote --boot >/dev/null 2>&1 || true; }
+start_tv_remote() { [ -x /usr/local/bin/orbis-tv-remote ] && /usr/local/bin/orbis-tv-remote --boot >/dev/null 2>&1 || true; }
+start_tv_autostart() {
+  CFG="/etc/orbis-tv-autostart"
+  [ -r "$CFG" ] || return 1
+  . "$CFG" 2>/dev/null || return 1
+  [ "${ORBIS_TV_AUTOSTART:-0}" = "1" ] || return 1
+  [ -x /usr/local/bin/orbis-tv ] || return 1
+  URL="${ORBIS_TV_URL:-https://tv.ittv.com.br/auth/login?redirect=%2F}"
+  start_tv_remote
+  log "Orbis TV automático: $URL"
+  ORBIS_TV_MODE=640x480 /usr/local/bin/orbis-tv "$URL"
+  return 0
+}
 
 log "OrbisOS iniciou em $(uname -r)"
 apply_saved_keyboard
@@ -32,5 +45,8 @@ sync_clock
 start_remote_access
 run_boot_automations
 start_web_dashboard
+if start_tv_autostart; then
+  log "Orbis TV automático encerrado; voltando ao menu."
+fi
 if [ -x /usr/local/bin/orbis ]; then /usr/local/bin/orbis; fi
 exec /bin/ash -l
