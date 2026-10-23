@@ -448,7 +448,7 @@ run_tv() {
     # comando de shell com valores escapados para evitar interpretacao da URL.
     chromium_command="$(printf '%s ' 'export' "DISPLAY=$DISPLAY_NUM" "HOME=$chromium_home")"
     for chromium_arg in "$browser" "--user-data-dir=$chromium_home/profile" --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"; do
-      escaped_arg="$(printf '%s' "$chromium_arg" | sed "s/'/'\\\\''/g")"
+      escaped_arg="$(printf '%s' "$chromium_arg" | sed "s/'/'\"'\"'/g")"
       chromium_command="$chromium_command '$escaped_arg'"
     done
     set -- su -s /bin/sh -c "$chromium_command" orbis-browser
