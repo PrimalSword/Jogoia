@@ -322,6 +322,10 @@ configure_display() {
   elif xrandr --query 2>/dev/null | grep -q '^[[:space:]]*640x480'; then
     xrandr --output "$out" --mode 640x480 --primary --pos 0x0 >/dev/null 2>&1 || true
   fi
+  # Ajuste opcional de overscan; sem suporte do driver, nao altera a imagem.
+  if [ "${ORBIS_TV_OVERSCAN:-0}" != "0" ] && [ -x /usr/local/bin/orbis-tv-fit ]; then
+    /usr/local/bin/orbis-tv-fit "$ORBIS_TV_OVERSCAN" || true
+  fi
 }
 start_xorg() {
   : > "$LOGFILE" 2>/dev/null || true
