@@ -1,0 +1,32 @@
+#!/bin/sh
+# JogOia browser compatibility helper. Safe by default: no changes without --upgrade.
+set -eu
+say(){ printf '%s\n' "$*"; }
+case "${1:---check}" in
+  --check)
+    say '=== JogOia: navegador e GPU ==='
+    for browser in firefox-esr firefox chromium; do
+      if command -v "$browser" >/dev/null 2>&1; then "$browser" --version 2>&1 | head -1; fi
+    done
+    if command -v apk >/dev/null 2>&1; then
+      say '=== Versoes disponiveis nos repositorios atuais ==='
+      apk policy firefox-esr firefox chromium 2>&1 || true
+    fi
+    if command -v lspci >/dev/null 2>&1; then lspci | grep -Ei 'vga|3d|display' || true; fi
+    if command -v glxinfo >/dev/null 2>&1; then glxinfo -B 2>/dev/null | grep -E 'OpenGL renderer|OpenGL version' || true; fi
+    say 'Para testar nfsu2.xyz: Firefox 145+ e WebGPU funcional podem ser necessarios.'
+    say 'O suporte real depende da GPU e dos drivers; nao e garantido.'
+    ;;
+  --upgrade)
+    [ "$(id -u)" -eq 0 ] || { say 'Execute como root.'; exit 1; }
+    command -v apk >/dev/null 2>&1 || { say 'Atualizacao suportada apenas no Alpine Linux.'; exit 1; }
+    say 'Atualizando apenas o Firefox ESR nos repositorios Alpine ja configurados.'
+    apk update
+    apk upgrade firefox-esr
+    say 'Reinicie o navegador para usar a nova versao.'
+    ;;
+  *)
+    say 'Uso: orbis-tv-browser --check | --upgrade'
+    exit 2
+    ;;
+esac
