@@ -97,6 +97,15 @@ input{width:100%;font-size:16px}.hidden{display:none!important}
       </div>
     </div>
 
+    <div class="card">
+      <h2>Terminal e manutenção</h2>
+      <p class="muted">O terminal administrativo usa um token diferente do PIN da TV. Abre em outra aba, sem conceder acesso administrativo ao controle remoto.</p>
+      <div class="row">
+        <button class="primary" id="adminTerminal">Abrir terminal</button>
+      </div>
+      <div id="adminStatus" class="muted"></div>
+    </div>
+
     <div class="card vol">
       <h2>Volume</h2>
       <div class="row">
@@ -169,6 +178,15 @@ input{width:100%;font-size:16px}.hidden{display:none!important}
   $('#nav').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); navigate($('#nav').value); }});
   $('#ittv').addEventListener('click',()=>navigate('https://tv.ittv.com.br/auth/login?redirect=%2F'));
   $('#browser').addEventListener('click',()=>navigate('https://www.google.com/'));
+  $('#adminTerminal').addEventListener('click', () => {
+    const target = new URL(window.location.href);
+    target.port = '8080';
+    target.pathname = '/';
+    target.search = '';
+    target.hash = 'terminalBox';
+    window.open(target.toString(), '_blank', 'noopener,noreferrer');
+    $('#adminStatus').textContent = 'Se a aba não abrir, permita pop-ups. O terminal requer o token administrativo do Orbis.';
+  });
 
   $('#sendText').addEventListener('click', async () => {
     const text = $('#text').value;
