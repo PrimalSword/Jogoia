@@ -1,0 +1,30 @@
+#!/bin/sh
+# Ajuste de overscan para TVs: usa apenas propriedades anunciadas pelo driver.
+# Nao altera a resolucao nem persiste ajustes se o driver nao suportar underscan.
+set -eu
+amount="${1:-${ORBIS_TV_OVERSCAN:-0}}"
+case "$amount" in ''|*[!0-9]*) echo 'Informe um valor inteiro de 0 a 80.' >&2; exit 2 ;; esac
+[ "$amount" -le 80 ] || { echo 'Valor maximo: 80 pixels.' >&2; exit 2; }
+command -v xrandr >/dev/null 2>&1 || { echo 'xrandr indisponivel.' >&2; exit 1; }
+output="${ORBIS_TV_OUTPUT:-}"
+if [ -z "$output" ]; then
+  output="$(xrandr --query | awk '$2=="connected" {print $1}' | grep -E '^(VGA|HDMI|DP|DVI)' | head -n 1 || true)"
+fi
+[ -n "$output" ] || { echo 'Saida de TV nao identificada.' >&2; exit 1; }
+properties="$(xrandr --prop 2>/dev/null || true)"
+section="$(printf '%s\n' "$properties" | awk -v name="$output" '$1==name && $2=="connected" {found=1;next} found && /^[^[:space:]]/ {exit} found {print}')"
+if ! printf '%s\n' "$section" | grep -Eq '^[[:space:]]+underscan:'; then
+  echo "A saida $output nao anuncia underscan. Nenhum ajuste foi aplicado."
+  exit 3
+fi
+if [ "$amount" -eq 0 ]; then
+  xrandr --output "$output" --set underscan off
+  echo "Underscan desativado em $output."
+else
+  if ! printf '%s\n' "$section" | grep -Eq '^[[:space:]]+underscan hborder:' || ! printf '%s\n' "$section" | grep -Eq '^[[:space:]]+underscan vborder:'; then
+    echo 'Driver sem controle de bordas; nenhum ajuste foi aplicado.'
+    exit 3
+  fi
+  xrandr --output "$output" --set underscan on --set 'underscan hborder' "$amount" --set 'underscan vborder' "$amount"
+  echo "Underscan ajustado em $output: $amount pixels."
+fi
