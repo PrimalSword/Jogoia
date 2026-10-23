@@ -444,7 +444,14 @@ run_tv() {
     fi
     xhost +SI:localuser:orbis-browser >>"$LOGFILE" 2>&1 || { say 'Falha ao autorizar usuario do navegador no Xorg.'; return 1; }
     # Passa os argumentos por parametros posicionais, sem interpolar URL no shell.
-    set -- su -s /bin/sh orbis-browser -c 'export DISPLAY="$1" HOME="$2"; shift 2; exec "$@"' sh "$DISPLAY_NUM" "$chromium_home" "$browser" --user-data-dir="$chromium_home/profile" --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"
+    # BusyBox su trata argumentos apos -c de forma diferente; passe tudo em um
+    # comando de shell com valores escapados para evitar interpretacao da URL.
+    chromium_command="$(printf '%s ' 'export' "DISPLAY=$DISPLAY_NUM" "HOME=$chromium_home")"
+    for chromium_arg in "$browser" "--user-data-dir=$chromium_home/profile" --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"; do
+      escaped_arg="$(printf '%s' "$chromium_arg" | sed "s/'/'\\\\''/g")"
+      chromium_command="$chromium_command '$escaped_arg'"
+    done
+    set -- su -s /bin/sh -c "$chromium_command" orbis-browser
   else
     browser="$(command -v firefox 2>/dev/null || command -v firefox-esr 2>/dev/null)"
     set -- "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url"
