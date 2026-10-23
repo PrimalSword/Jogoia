@@ -420,11 +420,21 @@ run_tv() {
   export OPENBOX_PID
   sleep 1
   say 'Para sair do navegador: Alt+F4 ou Ctrl+Q.'
-  browser="$(command -v firefox 2>/dev/null || command -v firefox-esr 2>/dev/null)"
-  if command -v dbus-run-session >/dev/null 2>&1; then
-    nice -n -5 dbus-run-session -- "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url" >>"$LOGFILE" 2>&1 || code=$?
+  # Seleciona Chromium apenas para este teste quando ORBIS_TV_BROWSER=chromium.
+  # Sem a variavel, o Firefox permanece como navegador padrao.
+  browser_choice="${ORBIS_TV_BROWSER:-firefox}"
+  if [ "$browser_choice" = "chromium" ] && command -v chromium >/dev/null 2>&1; then
+    browser="$(command -v chromium)"
+    mkdir -p "$STATE_DIR/chromium"
+    set -- "$browser" --user-data-dir="$STATE_DIR/chromium" --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"
   else
-    nice -n -5 "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url" >>"$LOGFILE" 2>&1 || code=$?
+    browser="$(command -v firefox 2>/dev/null || command -v firefox-esr 2>/dev/null)"
+    set -- "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url"
+  fi
+  if command -v dbus-run-session >/dev/null 2>&1; then
+    nice -n -5 dbus-run-session -- "$@" >>"$LOGFILE" 2>&1 || code=$?
+  else
+    nice -n -5 "$@" >>"$LOGFILE" 2>&1 || code=$?
   fi
   code="${code:-0}"
   stop_xorg
