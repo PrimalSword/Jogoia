@@ -425,8 +425,26 @@ run_tv() {
   browser_choice="${ORBIS_TV_BROWSER:-firefox}"
   if [ "$browser_choice" = "chromium" ] && command -v chromium >/dev/null 2>&1; then
     browser="$(command -v chromium)"
-    mkdir -p "$STATE_DIR/chromium"
-    set -- "$browser" --user-data-dir="$STATE_DIR/chromium" --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"
+    # Chromium nao inicia como root com sandbox. Use conta dedicada sem privilegios.
+    if ! command -v su >/dev/null 2>&1; then
+      say 'Chromium exige o comando su para executar como usuario sem privilegios.'
+      return 1
+    fi
+    if ! id orbis-browser >/dev/null 2>&1; then
+      adduser -D -H -s /bin/sh orbis-browser || { say 'Nao foi possivel criar usuario do navegador.'; return 1; }
+    fi
+    chromium_home="$STATE_DIR/chromium"
+    mkdir -p "$chromium_home"
+    chown -R orbis-browser "$chromium_home"
+    chmod 700 "$chromium_home"
+    # A sessao Xorg foi criada pelo Orbis; autoriza somente a conta do navegador.
+    if ! command -v xhost >/dev/null 2>&1; then
+      say 'Chromium requer xhost para acesso seguro ao Xorg.'
+      return 1
+    fi
+    xhost +SI:localuser:orbis-browser >>"$LOGFILE" 2>&1 || { say 'Falha ao autorizar usuario do navegador no Xorg.'; return 1; }
+    # Passa os argumentos por parametros posicionais, sem interpolar URL no shell.
+    set -- su -s /bin/sh orbis-browser -c 'export DISPLAY="$1" HOME="$2"; shift 2; exec "$@"' sh "$DISPLAY_NUM" "$chromium_home" "$browser" --user-data-dir="$chromium_home/profile" --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"
   else
     browser="$(command -v firefox 2>/dev/null || command -v firefox-esr 2>/dev/null)"
     set -- "$browser" --no-remote --profile "$PROFILE_DIR" --kiosk "$url"
@@ -439,7 +457,7 @@ run_tv() {
   code="${code:-0}"
   stop_xorg
   trap - EXIT INT TERM HUP
-  [ "$code" -eq 0 ] || { say "Firefox encerrou com código $code. Veja $LOGFILE"; return "$code"; }
+  [ "$code" -eq 0 ] || { say "Navegador encerrou com código $code. Veja $LOGFILE"; return "$code"; }
   say 'Modo TV encerrado. Voltando ao terminal.'
 }
 enable_ittv_autostart() {
