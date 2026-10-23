@@ -232,6 +232,8 @@ user_pref("extensions.autoDisableScopes", 0);
 user_pref("extensions.enabledScopes", 15);
 user_pref("extensions.installDistroAddons", true);
 user_pref("extensions.update.enabled", true);
+// Experimental WebGPU: browsers and graphics drivers may still reject it.
+user_pref("dom.webgpu.enabled", true);
 EOF
 }
 enable_performance_mode() {
