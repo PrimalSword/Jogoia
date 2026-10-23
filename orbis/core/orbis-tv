@@ -434,9 +434,10 @@ run_tv() {
       adduser -D -H -s /bin/sh orbis-browser || { say 'Nao foi possivel criar usuario do navegador.'; return 1; }
     fi
     chromium_home="$STATE_DIR/chromium"
-    mkdir -p "$chromium_home"
-    chown -R orbis-browser "$chromium_home"
-    chmod 700 "$chromium_home"
+    mkdir -p "$chromium_home/profile" "$chromium_home/config" "$chromium_home/cache"
+    chown -R orbis-browser:orbis-browser "$chromium_home"
+    chmod 755 "$STATE_DIR"
+    chmod 700 "$chromium_home" "$chromium_home/profile" "$chromium_home/config" "$chromium_home/cache"
     # A sessao Xorg foi criada pelo Orbis; autoriza somente a conta do navegador.
     if ! command -v xhost >/dev/null 2>&1; then
       say 'Chromium requer xhost para acesso seguro ao Xorg.'
@@ -446,8 +447,10 @@ run_tv() {
     # Passa os argumentos por parametros posicionais, sem interpolar URL no shell.
     # BusyBox su trata argumentos apos -c de forma diferente; passe tudo em um
     # comando de shell com valores escapados para evitar interpretacao da URL.
-    chromium_command="export DISPLAY='$DISPLAY_NUM' HOME='$chromium_home'; exec"
-    for chromium_arg in "$browser" "--user-data-dir=$chromium_home/profile" --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"; do
+    chromium_command="export DISPLAY='$DISPLAY_NUM' HOME='$chromium_home' XDG_CONFIG_HOME='$chromium_home/config' XDG_CACHE_HOME='$chromium_home/cache'; exec"
+    # OpenGL/ANGLE e Vulkan desligado: teste reversivel para GPU Intel antiga.
+    # Desativa somente relatorios de falha, nao o sandbox do navegador.
+    for chromium_arg in "$browser" "--user-data-dir=$chromium_home/profile" --use-gl=angle --use-angle=gl --disable-features=Vulkan --disable-crash-reporter --disable-breakpad --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"; do
       escaped_arg="$(printf '%s' "$chromium_arg" | sed "s/'/'\"'\"'/g")"
       chromium_command="$chromium_command '$escaped_arg'"
     done
