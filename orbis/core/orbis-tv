@@ -446,7 +446,7 @@ run_tv() {
     # Passa os argumentos por parametros posicionais, sem interpolar URL no shell.
     # BusyBox su trata argumentos apos -c de forma diferente; passe tudo em um
     # comando de shell com valores escapados para evitar interpretacao da URL.
-    chromium_command="$(printf '%s ' 'export' "DISPLAY=$DISPLAY_NUM" "HOME=$chromium_home")"
+    chromium_command="export DISPLAY='$DISPLAY_NUM' HOME='$chromium_home'; exec"
     for chromium_arg in "$browser" "--user-data-dir=$chromium_home/profile" --no-first-run --no-default-browser-check --disable-dev-shm-usage --kiosk "$url"; do
       escaped_arg="$(printf '%s' "$chromium_arg" | sed "s/'/'\"'\"'/g")"
       chromium_command="$chromium_command '$escaped_arg'"
