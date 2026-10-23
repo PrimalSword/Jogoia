@@ -104,6 +104,10 @@ if [ -x /usr/local/bin/orbis-web ]; then
   /usr/local/bin/orbis-web --start || { restore_backup; printf '%s\n' 'Atualização instalada, mas o Core não iniciou.'; exit 1; }
   health_check || { restore_backup; printf '%s\n' 'Core iniciou sem responder ao teste de saúde.'; exit 1; }
 fi
+# Recarrega o controle remoto para disponibilizar a nova interface no celular.
+if [ -x /usr/local/bin/orbis-tv-remote ]; then
+  /usr/local/bin/orbis-tv-remote --restart >/dev/null 2>&1 || log 'Nao foi possivel reiniciar controle remoto da TV.'
+fi
 trap - INT TERM HUP
 log "Orbis atualizado com segurança para $COMMIT"
 printf '\nAtualização concluída.\nVersão instalada: %s\nCommit instalado: %s\nCore: saudável\nPainel: centro de operações remoto 2.4 ativo\nBoot: Tailscale não bloqueante\n' "$VERSION" "$SHORT"
