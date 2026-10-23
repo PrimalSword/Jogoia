@@ -82,6 +82,14 @@ install -m 0644 "$CORE_DIR/orbis_core.py" "$tmp_core"
 python3 -m py_compile "$tmp_core" || { rm -f "$tmp_core"; restore_backup; printf '%s\n' 'Validação do núcleo Python falhou.'; exit 1; }
 mv -f "$tmp_core" "$RUNTIME_CORE"
 [ -r "$RUNTIME_CORE" ] || { restore_backup; printf '%s\n' 'Núcleo não foi instalado no caminho esperado.'; exit 1; }
+# Firefox: tenta atualizar apenas o pacote existente, sem bloquear a atualizacao
+# do Orbis se o repositorio estiver offline ou o pacote for indisponivel.
+if command -v apk >/dev/null 2>&1 && apk info -e firefox-esr >/dev/null 2>&1; then
+  printf '%s\n' 'Verificando atualizacao do Firefox ESR...'
+  if apk update >/dev/null 2>&1; then
+    apk upgrade firefox-esr || printf '%s\n' 'Aviso: Firefox mantido na versao instalada.'
+  fi
+fi
 remove_blocking_remote_services
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"; SHORT="$(git -C "$CHECKOUT" rev-parse --short HEAD)"
 cat > "$RELEASE_FILE" <<EOF
@@ -95,6 +103,10 @@ sync
 if [ -x /usr/local/bin/orbis-web ]; then
   /usr/local/bin/orbis-web --start || { restore_backup; printf '%s\n' 'Atualização instalada, mas o Core não iniciou.'; exit 1; }
   health_check || { restore_backup; printf '%s\n' 'Core iniciou sem responder ao teste de saúde.'; exit 1; }
+fi
+# Recarrega o controle remoto para disponibilizar a nova interface no celular.
+if [ -x /usr/local/bin/orbis-tv-remote ]; then
+  /usr/local/bin/orbis-tv-remote --restart >/dev/null 2>&1 || log 'Nao foi possivel reiniciar controle remoto da TV.'
 fi
 trap - INT TERM HUP
 log "Orbis atualizado com segurança para $COMMIT"

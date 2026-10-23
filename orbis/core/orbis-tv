@@ -232,6 +232,8 @@ user_pref("extensions.autoDisableScopes", 0);
 user_pref("extensions.enabledScopes", 15);
 user_pref("extensions.installDistroAddons", true);
 user_pref("extensions.update.enabled", true);
+// Experimental WebGPU: browsers and graphics drivers may still reject it.
+user_pref("dom.webgpu.enabled", true);
 EOF
 }
 enable_performance_mode() {
@@ -319,6 +321,10 @@ configure_display() {
     xrandr --output "$out" --mode "$mode" --primary --pos 0x0 >/dev/null 2>&1 || true
   elif xrandr --query 2>/dev/null | grep -q '^[[:space:]]*640x480'; then
     xrandr --output "$out" --mode 640x480 --primary --pos 0x0 >/dev/null 2>&1 || true
+  fi
+  # Ajuste opcional de overscan; sem suporte do driver, nao altera a imagem.
+  if [ "${ORBIS_TV_OVERSCAN:-0}" != "0" ] && [ -x /usr/local/bin/orbis-tv-fit ]; then
+    /usr/local/bin/orbis-tv-fit "$ORBIS_TV_OVERSCAN" || true
   fi
 }
 start_xorg() {
